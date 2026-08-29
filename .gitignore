@@ -1,0 +1,40 @@
+# --- Android / Gradle build output ---
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx/
+*.apk
+*.aab
+
+# --- Gradle wrapper / cache ---
+.gradle/
+build/
+
+# --- Local SDK / signing config (machine- or user-specific) ---
+local.properties
+*.jks
+*.keystore
+keystore.properties
+
+# --- Android Studio / IntelliJ ---
+*.iml
+.idea/
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
+
+# --- macOS / editor cruft ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# --- Native build byproducts (accidental in-tree builds) ---
+*.o
+*.so
+*.a
+
+# --- Dev-time logs / crash dumps ---
+*.log
+hs_err_pid*
