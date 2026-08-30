@@ -1,318 +1,703 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.drawerlayout.widget.DrawerLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/drawer_layout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:fitsSystemWindows="true"
-    android:padding="16dp"
     tools:context=".MainActivity">
 
-    <com.google.android.material.tabs.TabLayout
-        android:id="@+id/mode_tabs"
+    <!-- =============================== CONTENT =============================== -->
+    <FrameLayout
+        android:id="@+id/content_frame"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        app:tabMode="fixed"
-        app:tabGravity="fill">
+        android:layout_height="match_parent">
 
-        <com.google.android.material.tabs.TabItem
+        <!-- Full-screen map (Map mode) -->
+        <org.osmdroid.views.MapView
+            android:id="@+id/map"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+
+        <!-- Raw / Live forms -->
+        <androidx.core.widget.NestedScrollView
+            android:id="@+id/content_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <!-- ====================== RAW panel ====================== -->
+                <LinearLayout
+                    android:id="@+id/panel_raw"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="56dp">
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/raw_lat_input_layout"
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="8dp"
+                        android:hint="Latitude (°)">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/raw_lat_input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="numberSigned|numberDecimal"
+                            android:text="35.68" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/raw_lon_input_layout"
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="8dp"
+                        android:hint="Longitude (°)">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/raw_lon_input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="numberSigned|numberDecimal"
+                            android:text="139.76" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/raw_hgt_input_layout"
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="0.7"
+                        android:hint="Height (m)">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/raw_hgt_input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="numberSigned|numberDecimal"
+                            android:text="10" />
+                    </com.google.android.material.textfield.TextInputLayout>
+                </LinearLayout>
+
+                <!-- ====================== LIVE panel ===================== -->
+                <LinearLayout
+                    android:id="@+id/panel_live"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone"
+                    android:layout_marginTop="56dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/live_lat_input_layout"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:layout_marginEnd="8dp"
+                            android:hint="Latitude (°)">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/live_lat_input"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="numberSigned|numberDecimal"
+                                android:text="35.68" />
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/live_lon_input_layout"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:layout_marginEnd="8dp"
+                            android:hint="Longitude (°)">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/live_lon_input"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="numberSigned|numberDecimal"
+                                android:text="139.76" />
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/live_hgt_input_layout"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="0.7"
+                            android:hint="Height (m)">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/live_hgt_input"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="numberSigned|numberDecimal"
+                                android:text="100" />
+                        </com.google.android.material.textfield.TextInputLayout>
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/speed_label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="Move speed: 3 km/h" />
+
+                    <SeekBar
+                        android:id="@+id/speed_seek"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:enabled="false"
+                        android:max="200"
+                        android:progress="3" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginTop="4dp">
+
+                        <Button
+                            android:id="@+id/preset_walk"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp"
+                            android:paddingLeft="0dp"
+                            android:paddingRight="0dp"
+                            android:enabled="false"
+                            android:lines="2"
+                            android:textSize="11sp"
+                            android:text="Walk\n3 km/h" />
+
+                        <Button
+                            android:id="@+id/preset_run"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp"
+                            android:paddingLeft="0dp"
+                            android:paddingRight="0dp"
+                            android:enabled="false"
+                            android:lines="2"
+                            android:textSize="11sp"
+                            android:text="Run\n9 km/h" />
+
+                        <Button
+                            android:id="@+id/preset_moto"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp"
+                            android:paddingLeft="0dp"
+                            android:paddingRight="0dp"
+                            android:enabled="false"
+                            android:lines="2"
+                            android:textSize="11sp"
+                            android:text="Moto\n40 km/h" />
+
+                        <Button
+                            android:id="@+id/preset_car"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:insetLeft="0dp"
+                            android:insetRight="0dp"
+                            android:paddingLeft="0dp"
+                            android:paddingRight="0dp"
+                            android:enabled="false"
+                            android:lines="2"
+                            android:textSize="11sp"
+                            android:text="Car\n100 km/h" />
+                    </LinearLayout>
+
+                    <com.example.livegpssdrsim.JoystickView
+                        android:id="@+id/joystick"
+                        android:layout_width="240dp"
+                        android:layout_height="240dp"
+                        android:layout_gravity="center_horizontal"
+                        android:layout_marginTop="16dp"
+                        android:enabled="false" />
+
+                    <TextView
+                        android:id="@+id/live_readout"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:fontFamily="monospace"
+                        android:gravity="center_horizontal"
+                        android:text="idle" />
+                </LinearLayout>
+            </LinearLayout>
+        </androidx.core.widget.NestedScrollView>
+
+        <!-- Floating button to open the control panel -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_menu"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Raw LLH TX" />
+            android:layout_gravity="top|start"
+            android:layout_margin="8dp"
+            app:icon="@android:drawable/ic_menu_sort_by_size"
+            android:text="Controls"
+            app:elevation="4dp" />
 
-        <com.google.android.material.tabs.TabItem
+        <!-- Map-mode FABs (delete selected waypoint, above center-on-location) -->
+        <LinearLayout
+            android:id="@+id/fab_column"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Live" />
-    </com.google.android.material.tabs.TabLayout>
+            android:layout_gravity="bottom|end"
+            android:layout_margin="16dp"
+            android:gravity="end"
+            android:orientation="vertical"
+            android:visibility="gone">
 
-    <!-- ============================ RAW panel ============================ -->
-    <LinearLayout
-        android:id="@+id/panel_raw"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="16dp">
-
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/raw_lat_input_layout"
-            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginEnd="8dp"
-            android:hint="Latitude (°)">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/raw_lat_input"
-                android:layout_width="match_parent"
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/btn_delete_all"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:inputType="numberSigned|numberDecimal"
-                android:text="35.68" />
-        </com.google.android.material.textfield.TextInputLayout>
+                android:layout_marginBottom="12dp"
+                android:visibility="gone"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                app:backgroundTint="@android:color/holo_orange_dark"
+                app:tint="@android:color/white"
+                android:contentDescription="Delete all waypoints" />
 
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/raw_lon_input_layout"
-            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginEnd="8dp"
-            android:hint="Longitude (°)">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/raw_lon_input"
-                android:layout_width="match_parent"
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/btn_delete_wp"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:inputType="numberSigned|numberDecimal"
-                android:text="139.76" />
-        </com.google.android.material.textfield.TextInputLayout>
+                android:layout_marginBottom="12dp"
+                android:visibility="gone"
+                android:src="@android:drawable/ic_menu_delete"
+                app:backgroundTint="@android:color/holo_red_dark"
+                app:tint="@android:color/white"
+                android:contentDescription="Delete selected waypoint" />
 
-        <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/raw_hgt_input_layout"
-            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="0.7"
-            android:hint="Height (m)">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/raw_hgt_input"
-                android:layout_width="match_parent"
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/btn_my_location"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:inputType="numberSigned|numberDecimal"
-                android:text="10" />
-        </com.google.android.material.textfield.TextInputLayout>
-    </LinearLayout>
+                android:src="@android:drawable/ic_menu_mylocation"
+                app:backgroundTint="#1E88E5"
+                app:tint="@android:color/white"
+                android:contentDescription="Center on my location" />
+        </LinearLayout>
+    </FrameLayout>
 
-    <!-- ============================ LIVE panel =========================== -->
-    <LinearLayout
-        android:id="@+id/panel_live"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:visibility="gone"
-        android:layout_marginTop="16dp">
+    <!-- ============================== DRAWER =============================== -->
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/drawer_scroll"
+        android:layout_width="320dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="?android:attr/colorBackground"
+        android:fillViewport="true">
 
         <LinearLayout
+            android:id="@+id/drawer_inner"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:orientation="vertical"
+            android:padding="16dp">
 
-            <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/live_lat_input_layout"
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-                android:layout_width="0dp"
+            <TextView
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginEnd="8dp"
-                android:hint="Latitude (°)">
+                android:text="MODE"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
 
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/live_lat_input"
+            <com.google.android.material.button.MaterialButtonToggleGroup
+                android:id="@+id/mode_toggle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical"
+                app:singleSelection="true"
+                app:selectionRequired="true">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/mode_raw"
+                    style="?attr/materialButtonOutlinedStyle"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:inputType="numberSigned|numberDecimal"
-                    android:text="35.68" />
-            </com.google.android.material.textfield.TextInputLayout>
+                    android:checked="true"
+                    android:text="Raw LLH TX" />
 
-            <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/live_lon_input_layout"
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginEnd="8dp"
-                android:hint="Longitude (°)">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/live_lon_input"
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/mode_live"
+                    style="?attr/materialButtonOutlinedStyle"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:inputType="numberSigned|numberDecimal"
-                    android:text="139.76" />
-            </com.google.android.material.textfield.TextInputLayout>
+                    android:text="Live" />
 
-            <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/live_hgt_input_layout"
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="0.7"
-                android:hint="Height (m)">
-
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/live_hgt_input"
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/mode_map"
+                    style="?attr/materialButtonOutlinedStyle"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:inputType="numberSigned|numberDecimal"
-                    android:text="100" />
-            </com.google.android.material.textfield.TextInputLayout>
+                    android:text="Map" />
+            </com.google.android.material.button.MaterialButtonToggleGroup>
+
+            <!-- ==================== MAP options ==================== -->
+            <LinearLayout
+                android:id="@+id/panel_map"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone"
+                android:layout_marginTop="12dp">
+
+                <TextView
+                    android:id="@+id/route_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Tap the map to add waypoints" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/wp_count"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="0 waypoints" />
+
+                    <Button
+                        android:id="@+id/btn_wp_undo"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="0dp"
+                        android:text="Undo" />
+
+                    <Button
+                        android:id="@+id/btn_wp_clear"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:minWidth="0dp"
+                        android:text="Clear" />
+                </LinearLayout>
+
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/road_switch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Road routing (GraphHopper)" />
+
+                <RadioGroup
+                    android:id="@+id/profile_group"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <RadioButton
+                        android:id="@+id/profile_foot"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:checked="true"
+                        android:text="Foot" />
+
+                    <RadioButton
+                        android:id="@+id/profile_bike"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Bike" />
+
+                    <RadioButton
+                        android:id="@+id/profile_car"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Car" />
+                </RadioGroup>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/gh_key_layout"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone"
+                    android:hint="GraphHopper API key">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/gh_key_input"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="text"
+                        android:maxLines="1" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/map_alt_layout"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:hint="Altitude (m)">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/map_alt_input"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="numberSigned|numberDecimal"
+                        android:text="100" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <TextView
+                    android:id="@+id/map_speed_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Speed: 40 km/h" />
+
+                <SeekBar
+                    android:id="@+id/map_speed_seek"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="200"
+                    android:progress="40" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/map_preset_walk"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:lines="2"
+                        android:textSize="11sp"
+                        android:text="Walk\n3 km/h" />
+
+                    <Button
+                        android:id="@+id/map_preset_run"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:lines="2"
+                        android:textSize="11sp"
+                        android:text="Run\n9 km/h" />
+
+                    <Button
+                        android:id="@+id/map_preset_moto"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:lines="2"
+                        android:textSize="11sp"
+                        android:text="Moto\n40 km/h" />
+
+                    <Button
+                        android:id="@+id/map_preset_car"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:lines="2"
+                        android:textSize="11sp"
+                        android:text="Car\n100 km/h" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_play"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:minWidth="0dp"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:text="Play" />
+
+                    <Button
+                        android:id="@+id/btn_pause"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginStart="6dp"
+                        android:minWidth="0dp"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:enabled="false"
+                        android:text="Pause" />
+
+                    <Button
+                        android:id="@+id/btn_stop"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginStart="6dp"
+                        android:minWidth="0dp"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:enabled="false"
+                        android:text="Stop" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_gpx_load"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:minWidth="0dp"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:text="Load GPX" />
+
+                    <Button
+                        android:id="@+id/btn_gpx_export"
+                        style="?attr/materialButtonOutlinedStyle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginStart="6dp"
+                        android:minWidth="0dp"
+                        android:insetLeft="0dp"
+                        android:insetRight="0dp"
+                        android:text="Export GPX" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ==================== shared controls ==================== -->
+            <Button
+                android:id="@+id/tx_button"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Start TX" />
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/timenow_switch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:checked="true"
+                android:text="Retime ephemeris to now (-T now)"
+                android:textOn=""
+                android:textOff=""
+                app:showText="false" />
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/amp_switch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="TX RF Amp (+14 dB)"
+                android:textOn=""
+                android:textOff=""
+                app:showText="false" />
+
+            <TextView
+                android:id="@+id/vga_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="TX VGA Gain: 0 dB" />
+
+            <SeekBar
+                android:id="@+id/vga_seek"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="47"
+                android:progress="0" />
+
+            <TextView
+                android:id="@+id/log_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="LOG"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/status_text"
+                android:layout_width="match_parent"
+                android:layout_height="220dp"
+                android:layout_marginTop="4dp"
+                android:fontFamily="monospace"
+                android:gravity="top|start"
+                android:scrollbars="vertical"
+                android:text="" />
         </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
 
-        <TextView
-            android:id="@+id/speed_label"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Move speed: 3 km/h" />
-
-        <SeekBar
-            android:id="@+id/speed_seek"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:enabled="false"
-            android:max="200"
-            android:progress="3" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="4dp">
-
-            <Button
-                android:id="@+id/preset_walk"
-                style="?attr/materialButtonOutlinedStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:insetLeft="0dp"
-                android:insetRight="0dp"
-                android:paddingLeft="0dp"
-                android:paddingRight="0dp"
-                android:enabled="false"
-                android:lines="2"
-                android:textSize="11sp"
-                android:text="Walk\n3 km/h" />
-
-            <Button
-                android:id="@+id/preset_run"
-                style="?attr/materialButtonOutlinedStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:insetLeft="0dp"
-                android:insetRight="0dp"
-                android:paddingLeft="0dp"
-                android:paddingRight="0dp"
-                android:enabled="false"
-                android:lines="2"
-                android:textSize="11sp"
-                android:text="Run\n9 km/h" />
-
-            <Button
-                android:id="@+id/preset_moto"
-                style="?attr/materialButtonOutlinedStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:insetLeft="0dp"
-                android:insetRight="0dp"
-                android:paddingLeft="0dp"
-                android:paddingRight="0dp"
-                android:enabled="false"
-                android:lines="2"
-                android:textSize="11sp"
-                android:text="Moto\n40 km/h" />
-
-            <Button
-                android:id="@+id/preset_car"
-                style="?attr/materialButtonOutlinedStyle"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:insetLeft="0dp"
-                android:insetRight="0dp"
-                android:paddingLeft="0dp"
-                android:paddingRight="0dp"
-                android:enabled="false"
-                android:lines="2"
-                android:textSize="11sp"
-                android:text="Car\n100 km/h" />
-        </LinearLayout>
-
-        <com.example.livegpssdrsim.JoystickView
-            android:id="@+id/joystick"
-            android:layout_width="220dp"
-            android:layout_height="220dp"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="8dp"
-            android:enabled="false" />
-
-        <TextView
-            android:id="@+id/live_readout"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:fontFamily="monospace"
-            android:gravity="center_horizontal"
-            android:text="idle" />
-    </LinearLayout>
-
-    <!-- ========================= shared controls ========================= -->
-    <Button
-        android:id="@+id/tx_button"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="Start TX" />
-
-    <com.google.android.material.switchmaterial.SwitchMaterial
-        android:id="@+id/timenow_switch"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:checked="true"
-        android:text="Retime ephemeris to now (-T now)"
-        android:textOn=""
-        android:textOff=""
-        app:showText="false" />
-
-    <com.google.android.material.switchmaterial.SwitchMaterial
-        android:id="@+id/amp_switch"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="TX RF Amp (+14 dB)"
-        android:textOn=""
-        android:textOff=""
-        app:showText="false" />
-
-    <TextView
-        android:id="@+id/vga_label"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="TX VGA Gain: 0 dB" />
-
-    <SeekBar
-        android:id="@+id/vga_seek"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:max="47"
-        android:progress="0" />
-
-    <TextView
-        android:id="@+id/log_title"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="LOG"
-        android:textColor="?android:attr/textColorPrimary"
-        android:textSize="16sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:id="@+id/status_text"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="4dp"
-        android:fontFamily="monospace"
-        android:gravity="top|start"
-        android:scrollbars="vertical"
-        android:text="" />
-
-</LinearLayout>
+</androidx.drawerlayout.widget.DrawerLayout>

@@ -51,6 +51,8 @@ dependencies {
     implementation(libs.material)
     implementation(files("libs/hackrf_android.aar"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
+    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)

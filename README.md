@@ -1,7 +1,8 @@
 # LiveGpsSdrSim
 
 An Android app that turns a phone (or tablet) + a HackRF One connected over USB-OTG
-into a live GPS L1 C/A signal simulator. It has two modes, selectable via tabs:
+into a live GPS L1 C/A signal simulator. A retractable **Controls** side panel
+selects one of three modes:
 
 - **Raw LLH TX** — enter a fixed latitude, longitude and height, hit **Start TX**,
   and radiate a synthesized GPS signal for that static location.
@@ -10,6 +11,10 @@ into a live GPS L1 C/A signal simulator. It has two modes, selectable via tabs:
   presets sets the top speed, and motion uses trapezoidal acceleration /
   deceleration so the simulated receiver ramps smoothly up to speed and glides to
   a stop instead of teleporting.
+- **Map** — a full-screen map. Tap to drop numbered waypoints, connect them by a
+  straight line or **road routing** (GraphHopper, with your own API key), then
+  **Play** to drive the simulated position along the route at the chosen speed.
+  Load/export the route as GPX, and jump the map to the phone's real location.
 
 This project is a **port** of the desktop C program
 [`gps-sdr-sim`](https://github.com/osqzss/gps-sdr-sim) by
@@ -33,15 +38,16 @@ lets it run on-device.
 
 ```
 ┌────────────────────────────────────────────────────┐
-│  Kotlin + AppCompat UI                             │
-│  (Raw/Live tabs, joystick, speed slider, TX button)│
-├──────────────────────────┬─────────────────────────┤
-│  HackrfTxController       │  Live motion loop       │
-│   ├── hackrf_android      │   ├── joystick → target │
-│   │   (USB Host transport)│   │   velocity vector   │
-│   └── producer thread     │   ├── trapezoidal ramp  │
-│       → TX queue          │   └── 10 Hz pushPosition│
-├──────────────────────────┴─────────────────────────┤
+│  Kotlin + Material UI (DrawerLayout)               │
+│   ├── Controls drawer: mode select, TX, map opts   │
+│   ├── Raw form / Live joystick / full-screen Map   │
+│   └── Live motion loop + route playback (10 Hz)    │
+│         └── position → NativeGen.pushPosition()     │
+├────────────────────────────────────────────────────┤
+│  HackrfTxController                                │
+│   ├── hackrf_android (USB Host transport)          │
+│   └── producer thread → hackrf_android TX queue    │
+├────────────────────────────────────────────────────┤
 │  JNI bridge (native-lib.cpp)                       │
 ├────────────────────────────────────────────────────┤
 │  libgpssim.so — the ported gpssim.c, NDK-built     │
@@ -63,9 +69,15 @@ lets it run on-device.
   positions over a TCP socket; on Android the generator runs the same
   socket/live mode (`-S`) but the TCP listener is compiled out and positions
   are pushed straight into the generator's position FIFO from Kotlin via
-  `NativeGen.pushPosition()` — no port bound, no `INTERNET` permission. The UI's
-  joystick drives a velocity vector, integrates it into a position at 10 Hz, and
-  pushes each update.
+  `NativeGen.pushPosition()` — no port bound, no local socket. Both the Live
+  joystick and Map route-playback feed this same path at 10 Hz: the joystick
+  integrates a velocity vector; playback advances a cursor along the route.
+- **The Map is native, not the web frontend.** The upstream fork ships a
+  Leaflet/Node route planner; here the map is [`osmdroid`](https://github.com/osmdroid/osmdroid),
+  waypoint geometry and GPX are pure Kotlin (`RouteGeometry.kt`, `GpxIo.kt`), and
+  road routing calls the GraphHopper Directions API directly (`GraphHopperRouter.kt`).
+  This is why the app needs the `INTERNET` permission (map tiles + routing) and
+  `ACCESS_FINE_LOCATION` (the "center on my location" button).
 
 ## Requirements
 
@@ -90,12 +102,19 @@ from the command line:
 1. Plug the HackRF into your phone via OTG. Android should offer to open
    this app for the USB device — the `USB_DEVICE_ATTACHED` intent-filter
    in the manifest handles this.
-2. Pick a mode with the tab bar:
+2. Tap **Controls** (top-left) to open the side panel and pick a mode:
    - **Raw LLH TX** — enter latitude, longitude and height (metres) for the
      fixed location the fake receiver should report.
    - **Live** — enter a starting latitude, longitude and height. These fields
      seed the run; once TX is live the joystick drives the position.
-3. Configure the RF chain (shared by both tabs):
+   - **Map** — tap the map to add numbered waypoints (tap a waypoint to select
+     it; the red 🗑 FAB deletes it, the orange ✕ FAB clears all). Toggle
+     **Road routing (GraphHopper)** and paste your API key for road-snapped
+     routes, or leave it off for straight lines. Set an **Altitude** and a
+     **Speed**, then use **Play / Pause / Stop**. The blue dot is the phone's
+     real GPS (the location FAB centers on it); the orange dot is the simulated
+     position moving along the route.
+3. Configure the RF chain (shared by all modes, in the drawer):
    - **Retime ephemeris to now (`-T now`)** — on by default. Rewrites the
      bundled ephemeris's clock/orbit epoch to the phone's current UTC so a
      real receiver accepts it. Turn off to transmit at the file's native epoch.
@@ -103,14 +122,15 @@ from the command line:
      wired-to-a-receiver setups.
    - **TX VGA Gain** — 0–47 dB. Start at 0 and only increase if a
      receiver-under-test can't acquire lock.
-4. Tap **Start TX**. The **LOG** pane (auto-scrolling) reports the ephemeris
-   path, generator progress and any underrun warnings.
+4. Start transmitting — **Start TX** (Raw/Live) or **Play** (Map). The **LOG**
+   pane (auto-scrolling) reports the ephemeris path, generator progress and any
+   underrun warnings.
 5. In **Live** mode, push the joystick to move: direction sets heading,
    deflection sets fraction of the top speed. Use the **speed slider** (km/h)
    or a **Walk / Run / Motorcycle / Car** preset to set the top speed; the live
    readout shows current speed and position. Height stays editable during TX.
-6. Tap **Start/Stop TX** to toggle. Amp and gain can be adjusted while TX is
-   running; the mode tabs lock while a transmission is in flight.
+6. Amp and gain can be adjusted while TX is running; mode switching and route
+   editing lock while a transmission is in flight.
 
 ## Attribution
 
@@ -120,16 +140,23 @@ from the command line:
 - **`hackrf_android.aar`** — Copyright © Dennis Mantz,
   [`demantz/hackrf_android`](https://github.com/demantz/hackrf_android).
 - **HackRF hardware and `libhackrf` protocol** — Great Scott Gadgets.
+- **Map rendering** — [`osmdroid`](https://github.com/osmdroid/osmdroid). Tiles
+  are served from **Esri World Street Map** (keyless, for development use;
+  point at a licensed/self-hosted source for anything heavier).
+- **Road routing** — the [GraphHopper](https://www.graphhopper.com/) Directions
+  API (you supply your own key). Routes ultimately derive from OpenStreetMap
+  data, © OpenStreetMap contributors.
 
 The Kotlin/JNI glue and Android UI in this project are new work built on
 top of those.
 
 ## Known limitations
 
-- **Live motion is joystick-driven, not scripted.** You steer the position by
-  hand; there's no map picker or GPX/route playback yet. The generator's
-  motion-file loaders (`readUserMotion` / `readUserMotionLLH`) are already
-  ported, so wiring a file picker into the same FIFO is a natural follow-up.
+- **Map playback is basic.** Routes play at a constant speed; the upstream
+  planner's extras — repeat/bounce/loop, random stops, jitter, per-point
+  elevation from a terrain service — aren't ported yet.
+- **Road routing needs your own GraphHopper key**, and map tiles come from
+  Esri (OSM's own tile servers block non-browser apps). See Attribution.
 - **No true velocity/Doppler model.** The generator recomputes ranges from each
   pushed static position, so the receiver infers velocity from the position
   rate rather than from a modelled Doppler. Fine for typical lock/track

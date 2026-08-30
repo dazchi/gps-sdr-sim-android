@@ -4,6 +4,13 @@
 
     <uses-feature android:name="android.hardware.usb.host" />
 
+    <!-- Map tiles (osmdroid) + GraphHopper routing -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- "Center on my location" button in Map mode -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
