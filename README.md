@@ -1,9 +1,15 @@
 # LiveGpsSdrSim
 
 An Android app that turns a phone (or tablet) + a HackRF One connected over USB-OTG
-into a live GPS L1 C/A signal simulator. It lets you enter a latitude and
-longitude in the UI, hit **Start TX**, and start radiating a synthesized GPS
-signal for the coordinates you chose.
+into a live GPS L1 C/A signal simulator. It has two modes, selectable via tabs:
+
+- **Raw LLH TX** — enter a fixed latitude, longitude and height, hit **Start TX**,
+  and radiate a synthesized GPS signal for that static location.
+- **Live** — seed a starting position, then **drive it around in real time** with an
+  on-screen joystick. A speed slider (km/h) with Walk / Run / Motorcycle / Car
+  presets sets the top speed, and motion uses trapezoidal acceleration /
+  deceleration so the simulated receiver ramps smoothly up to speed and glides to
+  a stop instead of teleporting.
 
 This project is a **port** of the desktop C program
 [`gps-sdr-sim`](https://github.com/osqzss/gps-sdr-sim) by
@@ -28,16 +34,19 @@ lets it run on-device.
 ```
 ┌────────────────────────────────────────────────────┐
 │  Kotlin + AppCompat UI                             │
-│  (lat/lon inputs, amp toggle, VGA gain, TX button) │
-├────────────────────────────────────────────────────┤
-│  HackrfTxController                                │
-│    ├── hackrf_android (USB Host API transport)     │
-│    └── producer thread → hackrf_android TX queue   │
-├────────────────────────────────────────────────────┤
+│  (Raw/Live tabs, joystick, speed slider, TX button)│
+├──────────────────────────┬─────────────────────────┤
+│  HackrfTxController       │  Live motion loop       │
+│   ├── hackrf_android      │   ├── joystick → target │
+│   │   (USB Host transport)│   │   velocity vector   │
+│   └── producer thread     │   ├── trapezoidal ramp  │
+│       → TX queue          │   └── 10 Hz pushPosition│
+├──────────────────────────┴─────────────────────────┤
 │  JNI bridge (native-lib.cpp)                       │
 ├────────────────────────────────────────────────────┤
 │  libgpssim.so — the ported gpssim.c, NDK-built     │
-│    ├── static location + ephemeris → I/Q samples   │
+│    ├── location + ephemeris → I/Q samples          │
+│    ├── position FIFO (fed live via pushPosition)   │
 │    └── ring buffer drained by the producer thread  │
 └────────────────────────────────────────────────────┘
 ```
@@ -50,6 +59,13 @@ lets it run on-device.
 - **Samples flow generator → ring buffer → producer thread → hackrf_android
   TX queue → USB → HackRF.** The ring buffer decouples the generator's
   bursty CPU rhythm from the HackRF's real-time sample clock.
+- **Live positions bypass the network.** The upstream fork streams live
+  positions over a TCP socket; on Android the generator runs the same
+  socket/live mode (`-S`) but the TCP listener is compiled out and positions
+  are pushed straight into the generator's position FIFO from Kotlin via
+  `NativeGen.pushPosition()` — no port bound, no `INTERNET` permission. The UI's
+  joystick drives a velocity vector, integrates it into a position at 10 Hz, and
+  pushes each update.
 
 ## Requirements
 
@@ -74,16 +90,27 @@ from the command line:
 1. Plug the HackRF into your phone via OTG. Android should offer to open
    this app for the USB device — the `USB_DEVICE_ATTACHED` intent-filter
    in the manifest handles this.
-2. Enter the latitude and longitude you want the fake receiver to think
-   it is at. Height is fixed at 10 m.
-3. Configure the RF chain:
+2. Pick a mode with the tab bar:
+   - **Raw LLH TX** — enter latitude, longitude and height (metres) for the
+     fixed location the fake receiver should report.
+   - **Live** — enter a starting latitude, longitude and height. These fields
+     seed the run; once TX is live the joystick drives the position.
+3. Configure the RF chain (shared by both tabs):
+   - **Retime ephemeris to now (`-T now`)** — on by default. Rewrites the
+     bundled ephemeris's clock/orbit epoch to the phone's current UTC so a
+     real receiver accepts it. Turn off to transmit at the file's native epoch.
    - **TX RF Amp** — the HackRF's +14 dB amplifier stage. Leave OFF for
      wired-to-a-receiver setups.
    - **TX VGA Gain** — 0–47 dB. Start at 0 and only increase if a
      receiver-under-test can't acquire lock.
-4. Tap **Start TX**. The status pane logs generator progress and any
-   underrun warnings.
-5. Tap again to stop. Both amp and gain can be adjusted while TX is running.
+4. Tap **Start TX**. The **LOG** pane (auto-scrolling) reports the ephemeris
+   path, generator progress and any underrun warnings.
+5. In **Live** mode, push the joystick to move: direction sets heading,
+   deflection sets fraction of the top speed. Use the **speed slider** (km/h)
+   or a **Walk / Run / Motorcycle / Car** preset to set the top speed; the live
+   readout shows current speed and position. Height stays editable during TX.
+6. Tap **Start/Stop TX** to toggle. Amp and gain can be adjusted while TX is
+   running; the mode tabs lock while a transmission is in flight.
 
 ## Attribution
 
@@ -99,11 +126,14 @@ top of those.
 
 ## Known limitations
 
-- **Position is static per TX run.** Change lat/lon → Start TX → HackRF
-  transmits that fixed location. Editing the fields while TX is running
-  has no effect. Live-position updates (map picker / GPX playback) are
-  planned; they'd tie into the same `socket_mode` LLH FIFO the desktop
-  frontend uses.
+- **Live motion is joystick-driven, not scripted.** You steer the position by
+  hand; there's no map picker or GPX/route playback yet. The generator's
+  motion-file loaders (`readUserMotion` / `readUserMotionLLH`) are already
+  ported, so wiring a file picker into the same FIFO is a natural follow-up.
+- **No true velocity/Doppler model.** The generator recomputes ranges from each
+  pushed static position, so the receiver infers velocity from the position
+  rate rather than from a modelled Doppler. Fine for typical lock/track
+  testing; not for high-dynamics or RTK-grade work.
 - **No foreground service.** Swiping the app away or long backgrounding
   will kill the TX stream. Wrap the transmit path in a `Service` with a
   persistent notification if you need it to survive.
@@ -111,6 +141,8 @@ top of those.
   falls back to normal scheduling; if you see underruns during long
   transmissions, that's the reason.
 - **Ephemeris is bundled** (`app/src/main/assets/brdc0010.22n`, a 2022
-  file). Real-world GPS receivers expect roughly-current ephemeris —
-  loading fresher RINEX from the phone's storage or from a
-  network-fetched broadcast RINEX is a natural follow-up.
+  file), but the **Retime ephemeris (`-T now`)** toggle rewrites its epoch to
+  the phone's current UTC by default, so receivers still accept it. Loading a
+  fresher RINEX from storage or a network-fetched broadcast RINEX (for accurate
+  orbits, not just a retimed clock) remains a natural follow-up. Note `-T now`
+  trusts the phone's system clock — keep it on automatic network time.

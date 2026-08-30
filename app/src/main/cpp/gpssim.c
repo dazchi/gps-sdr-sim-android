@@ -158,6 +158,15 @@ static size_t pos_f_head = 0, pos_f_tail = 0, pos_f_count = 0;
 static pthread_mutex_t pos_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  pos_cond  = PTHREAD_COND_INITIALIZER;
 
+#ifdef ANDROID_JNI_STREAMING
+// On Android the position FIFO is fed directly from Kotlin via
+// android_push_position() (JNI) instead of the TCP socket listener. These
+// hold the jump-check state that socket_listener_thread keeps as locals; they
+// are file-scope so android_streaming_reset() can clear them between runs.
+static double g_push_last_llh[3] = {0.0, 0.0, 0.0}; // radians, radians, metres
+static int    g_push_has_last    = 0;
+#endif
+
 // Thread-safe write for the main generation loop
 void rb_write(int8_t* data, size_t len) {
 	pthread_mutex_lock(&rb_mutex);
@@ -1906,6 +1915,7 @@ static double haversine_dist(double lat1, double lon1, double lat2, double lon2)
 	return 2.0 * WGS84_RADIUS * atan2(sqrt(a), sqrt(1.0-a));
 }
 
+#ifndef ANDROID_JNI_STREAMING
 static void* socket_listener_thread(void* arg)
 {
 	double last_llh[3] = {0, 0, 0};
@@ -2017,6 +2027,7 @@ static void* socket_listener_thread(void* arg)
 #endif
 	return NULL;
 }
+#endif // !ANDROID_JNI_STREAMING
 
 void usage(void)
 {
@@ -2641,12 +2652,18 @@ int main(int argc, char *argv[])
 #endif
 
 		if (socket_mode) {
+#ifndef ANDROID_JNI_STREAMING
 			pthread_t sock_thread;
 			pthread_create(&sock_thread, NULL, socket_listener_thread, NULL);
 			pthread_detach(sock_thread);
 
 			// Block until the first position is received before opening the RF link
 			fprintf(stderr, "Waiting for initial position on TCP port %d...\n", SOCKET_PORT);
+#else
+			// On Android there is no TCP listener; positions arrive directly
+			// from Kotlin via android_push_position(). Block until the first one.
+			fprintf(stderr, "Waiting for initial position from app...\n");
+#endif
 			pthread_mutex_lock(&pos_mutex);
 			while (pos_f_count == 0 && is_running)
 				pthread_cond_wait(&pos_cond, &pos_mutex);
@@ -3019,6 +3036,8 @@ void android_streaming_reset(void) {
 
     pthread_mutex_lock(&pos_mutex);
     pos_f_head = pos_f_tail = pos_f_count = 0;
+    g_push_last_llh[0] = g_push_last_llh[1] = g_push_last_llh[2] = 0.0;
+    g_push_has_last = 0;
     pthread_cond_broadcast(&pos_cond);
     pthread_mutex_unlock(&pos_mutex);
 
@@ -3030,6 +3049,46 @@ void android_streaming_reset(void) {
     optind = 1;
     opterr = 1;
     optopt = 0;
+}
+
+// Push a live position (degrees) into the FIFO the socket-mode generator loop
+// drains every 10 Hz tick. This is the Android replacement for the TCP socket
+// listener: same jump sanity-check and latest-wins overflow policy, called
+// from the JNI thread instead of a network client. Returns 1 if accepted, 0 if
+// rejected as an implausible jump (> MAX_POS_JUMP_M from the last position).
+int android_push_position(double lat_deg, double lon_deg, double hgt_m) {
+    double lat_r = lat_deg / R2D;
+    double lon_r = lon_deg / R2D;
+
+    if (g_push_has_last) {
+        double dist = haversine_dist(g_push_last_llh[0], g_push_last_llh[1], lat_r, lon_r);
+        if (dist > MAX_POS_JUMP_M) {
+            fprintf(stderr, "WARNING: Position jump %.0f m exceeds %.0f m limit, rejected.\n",
+                dist, MAX_POS_JUMP_M);
+            return 0;
+        }
+    }
+
+    g_push_last_llh[0] = lat_r;
+    g_push_last_llh[1] = lon_r;
+    g_push_last_llh[2] = hgt_m;
+    g_push_has_last = 1;
+
+    pthread_mutex_lock(&pos_mutex);
+    // Latest-wins: on overflow drop the oldest so the generator catches up to
+    // real time instead of replaying a stale backlog.
+    if (pos_f_count == POS_FIFO_SIZE) {
+        pos_f_tail = (pos_f_tail + 1) % POS_FIFO_SIZE;
+        pos_f_count--;
+    }
+    pos_fifo[pos_f_head][0] = lat_r;
+    pos_fifo[pos_f_head][1] = lon_r;
+    pos_fifo[pos_f_head][2] = hgt_m;
+    pos_f_head = (pos_f_head + 1) % POS_FIFO_SIZE;
+    pos_f_count++;
+    pthread_cond_signal(&pos_cond);
+    pthread_mutex_unlock(&pos_mutex);
+    return 1;
 }
 
 // Pull exactly `len` bytes into `dst`, blocking until either enough data is

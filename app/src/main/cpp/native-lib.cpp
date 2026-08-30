@@ -30,6 +30,7 @@ extern "C" {
     size_t rb_pull_bytes(uint8_t *dst, size_t len);
     void   android_request_shutdown(void);
     void   android_streaming_reset(void);
+    int    android_push_position(double lat_deg, double lon_deg, double hgt_m);
     extern __thread jmp_buf g_gpssim_exit_jmp;
     extern __thread int     g_gpssim_exit_armed;
 }
@@ -202,4 +203,14 @@ Java_com_example_livegpssdrsim_NativeGen_requestShutdown(
         JNIEnv* /*env*/, jobject /*thiz*/) {
     LOGI("requestShutdown()");
     android_request_shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Live position push — feeds the socket-mode generator loop directly (no TCP).
+// Returns 1 if the position was accepted, 0 if rejected as an implausible jump.
+// ---------------------------------------------------------------------------
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_livegpssdrsim_NativeGen_pushPosition(
+        JNIEnv* /*env*/, jobject /*thiz*/, jdouble lat, jdouble lon, jdouble hgt) {
+    return android_push_position(lat, lon, hgt);
 }

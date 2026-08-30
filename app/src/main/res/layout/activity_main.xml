@@ -1,117 +1,318 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:orientation="vertical"
     android:fitsSystemWindows="true"
     android:padding="16dp"
     tools:context=".MainActivity">
 
-    <TextView
-        android:id="@+id/sample_text"
-        android:layout_width="0dp"
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/mode_tabs"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="loading..."
-        android:textAppearance="?attr/textAppearanceHeadlineSmall"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:tabMode="fixed"
+        app:tabGravity="fill">
 
-    <com.google.android.material.textfield.TextInputLayout
-        android:id="@+id/lat_input_layout"
-        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-        android:layout_width="0dp"
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Raw LLH TX" />
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Live" />
+    </com.google.android.material.tabs.TabLayout>
+
+    <!-- ============================ RAW panel ============================ -->
+    <LinearLayout
+        android:id="@+id/panel_raw"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:layout_marginEnd="8dp"
-        android:hint="Latitude (°)"
-        app:layout_constraintEnd_toStartOf="@id/lon_input_layout"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/sample_text">
+        android:orientation="horizontal"
+        android:layout_marginTop="16dp">
 
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/lat_input"
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/raw_lat_input_layout"
+            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:hint="Latitude (°)">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/raw_lat_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="numberSigned|numberDecimal"
+                android:text="35.68" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/raw_lon_input_layout"
+            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:hint="Longitude (°)">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/raw_lon_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="numberSigned|numberDecimal"
+                android:text="139.76" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/raw_hgt_input_layout"
+            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="0.7"
+            android:hint="Height (m)">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/raw_hgt_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="numberSigned|numberDecimal"
+                android:text="10" />
+        </com.google.android.material.textfield.TextInputLayout>
+    </LinearLayout>
+
+    <!-- ============================ LIVE panel =========================== -->
+    <LinearLayout
+        android:id="@+id/panel_live"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:layout_marginTop="16dp">
+
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:inputType="numberSigned|numberDecimal"
-            android:text="35.68" />
-    </com.google.android.material.textfield.TextInputLayout>
+            android:orientation="horizontal">
 
-    <com.google.android.material.textfield.TextInputLayout
-        android:id="@+id/lon_input_layout"
-        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:hint="Longitude (°)"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toEndOf="@id/lat_input_layout"
-        app:layout_constraintTop_toBottomOf="@id/sample_text">
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/live_lat_input_layout"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"
+                android:hint="Latitude (°)">
 
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/lon_input"
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/live_lat_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberSigned|numberDecimal"
+                    android:text="35.68" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/live_lon_input_layout"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"
+                android:hint="Longitude (°)">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/live_lon_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberSigned|numberDecimal"
+                    android:text="139.76" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/live_hgt_input_layout"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="0.7"
+                android:hint="Height (m)">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/live_hgt_input"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberSigned|numberDecimal"
+                    android:text="100" />
+            </com.google.android.material.textfield.TextInputLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/speed_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Move speed: 3 km/h" />
+
+        <SeekBar
+            android:id="@+id/speed_seek"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:inputType="numberSigned|numberDecimal"
-            android:text="139.76" />
-    </com.google.android.material.textfield.TextInputLayout>
+            android:enabled="false"
+            android:max="200"
+            android:progress="3" />
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="4dp">
+
+            <Button
+                android:id="@+id/preset_walk"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:paddingLeft="0dp"
+                android:paddingRight="0dp"
+                android:enabled="false"
+                android:lines="2"
+                android:textSize="11sp"
+                android:text="Walk\n3 km/h" />
+
+            <Button
+                android:id="@+id/preset_run"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:paddingLeft="0dp"
+                android:paddingRight="0dp"
+                android:enabled="false"
+                android:lines="2"
+                android:textSize="11sp"
+                android:text="Run\n9 km/h" />
+
+            <Button
+                android:id="@+id/preset_moto"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:paddingLeft="0dp"
+                android:paddingRight="0dp"
+                android:enabled="false"
+                android:lines="2"
+                android:textSize="11sp"
+                android:text="Moto\n40 km/h" />
+
+            <Button
+                android:id="@+id/preset_car"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:insetLeft="0dp"
+                android:insetRight="0dp"
+                android:paddingLeft="0dp"
+                android:paddingRight="0dp"
+                android:enabled="false"
+                android:lines="2"
+                android:textSize="11sp"
+                android:text="Car\n100 km/h" />
+        </LinearLayout>
+
+        <com.example.livegpssdrsim.JoystickView
+            android:id="@+id/joystick"
+            android:layout_width="220dp"
+            android:layout_height="220dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="8dp"
+            android:enabled="false" />
+
+        <TextView
+            android:id="@+id/live_readout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:fontFamily="monospace"
+            android:gravity="center_horizontal"
+            android:text="idle" />
+    </LinearLayout>
+
+    <!-- ========================= shared controls ========================= -->
     <Button
         android:id="@+id/tx_button"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="Start TX"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/lat_input_layout" />
+        android:text="Start TX" />
+
+    <com.google.android.material.switchmaterial.SwitchMaterial
+        android:id="@+id/timenow_switch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:checked="true"
+        android:text="Retime ephemeris to now (-T now)"
+        android:textOn=""
+        android:textOff=""
+        app:showText="false" />
 
     <com.google.android.material.switchmaterial.SwitchMaterial
         android:id="@+id/amp_switch"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:text="TX RF Amp (+14 dB)"
         android:textOn=""
         android:textOff=""
-        app:showText="false"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/tx_button" />
+        app:showText="false" />
 
     <TextView
         android:id="@+id/vga_label"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="TX VGA Gain: 0 dB"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/amp_switch" />
+        android:text="TX VGA Gain: 0 dB" />
 
     <SeekBar
         android:id="@+id/vga_seek"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:max="47"
-        android:progress="0"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/vga_label" />
+        android:progress="0" />
+
+    <TextView
+        android:id="@+id/log_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="LOG"
+        android:textColor="?android:attr/textColorPrimary"
+        android:textSize="16sp"
+        android:textStyle="bold" />
 
     <TextView
         android:id="@+id/status_text"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_marginTop="16dp"
+        android:layout_weight="1"
+        android:layout_marginTop="4dp"
         android:fontFamily="monospace"
         android:gravity="top|start"
         android:scrollbars="vertical"
-        android:text=""
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/vga_seek" />
+        android:text="" />
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+</LinearLayout>
