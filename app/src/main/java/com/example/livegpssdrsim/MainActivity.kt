@@ -14,8 +14,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.Editable
-import android.text.TextWatcher
 import android.text.method.ScrollingMovementMethod
 import android.util.Log
 import android.view.View
@@ -28,6 +26,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
+import androidx.core.widget.doAfterTextChanged
 import com.example.livegpssdrsim.databinding.ActivityMainBinding
 import com.google.android.material.button.MaterialButtonToggleGroup
 import kotlinx.coroutines.CoroutineScope
@@ -52,17 +51,21 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.random.Random
 
 class MainActivity : AppCompatActivity() {
 
-    private enum class Mode { RAW, LIVE, MAP }
+    private enum class Mode { LIVE, MAP, SETTINGS }   // LIVE = merged LLH TX
 
     private lateinit var binding: ActivityMainBinding
     private val scope = CoroutineScope(Dispatchers.Main)
-    private var tx: HackrfTxController? = null
+    private var hackrf: HackrfTxController? = null   // non-null once connected
+    private var txRunning = false                    // true while transmitting
+    private var connecting = false
 
-    private var mode: Mode = Mode.RAW
+    private var mode: Mode = Mode.LIVE
 
+    private val settingsPrefs by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
     private var ampEnabled: Boolean = false
     private var vgaGain: Int = 0
 
@@ -100,11 +103,21 @@ class MainActivity : AppCompatActivity() {
     private var myLocationEnabled = false
     private var selectedWaypoint = -1                  // index into waypoints, -1 = none
 
+    private enum class RepeatMode { OFF, BOUNCE, LOOP }
+    private var repeatMode = RepeatMode.OFF
+    private var direction = 1                           // +1 forward, -1 bouncing back
+    private var loopsDone = 0
+    private var elevJob: Job? = null
+    private var ghRetrySecs = 0
+    private var syncingSpeed = false
+
     private var routePlaying = false
     private var routePaused = false
     private var routeProgress = 0.0                    // metres travelled along the route
     private var lastRouteTickMs: Long = 0L
     private var routeLoopRunning = false
+    private var stopRemainingMs = 0.0                  // random-stop hold timer
+    private var stopCheckpoints = listOf<Double>()     // waypoint distances along the route
 
     private val mapHandler = Handler(Looper.getMainLooper())
     private val routeTick = object : Runnable {
@@ -114,6 +127,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private val routeFetchRunnable = Runnable { fetchRoute() }
+    private val ghRetryRunnable = object : Runnable {
+        override fun run() {
+            if (ghRetrySecs <= 0) { scheduleRouteFetch(); return }
+            setRouteStatus("GraphHopper rate limit — retrying in ${ghRetrySecs}s…")
+            ghRetrySecs--
+            mapHandler.postDelayed(this, 1000)
+        }
+    }
 
     // SAF pickers for GPX
     private val openGpx = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -170,7 +191,7 @@ class MainActivity : AppCompatActivity() {
             )
             binding.drawerInner.updatePadding(top = edge + bars.top, bottom = edge + bars.bottom)
             binding.btnMenu.updateLayoutParams<FrameLayout.LayoutParams> {
-                leftMargin = bars.left + gap
+                leftMargin = bars.left + edge + gap   // nudged in from the edge
                 topMargin = bars.top + gap
             }
             binding.fabColumn.updateLayoutParams<FrameLayout.LayoutParams> {
@@ -181,14 +202,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.statusText.movementMethod = ScrollingMovementMethod()
+        binding.statusTextSettings.movementMethod = ScrollingMovementMethod()
         appendStatus(stringFromJNI())
         binding.txButton.setOnClickListener { onTxClicked() }
 
         setupModeSelector()
+        setupDeviceControls()
         setupRfControls()
         setupLiveControls()
         setupMap()
         setupMapControls()
+        setupSettingsControls()
     }
 
     override fun onResume() {
@@ -208,8 +232,8 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         stopMotionLoop()
         stopRouteLoop()
-        tx?.stop()
-        tx = null
+        hackrf?.stopTx()
+        hackrf = null
     }
 
     // ======================================================================
@@ -222,35 +246,105 @@ class MainActivity : AppCompatActivity() {
             if (!isChecked) return@addOnButtonCheckedListener
             selectMode(
                 when (checkedId) {
-                    R.id.mode_live -> Mode.LIVE
-                    R.id.mode_map  -> Mode.MAP
-                    else           -> Mode.RAW
+                    R.id.mode_map      -> Mode.MAP
+                    R.id.mode_settings -> Mode.SETTINGS
+                    else               -> Mode.LIVE
                 }
             )
         }
-        selectMode(Mode.RAW)
+        selectMode(Mode.LIVE)
     }
 
     private fun selectMode(newMode: Mode) {
         mode = newMode
-        // Content: full-screen map for Map mode, the Raw/Live forms otherwise.
-        binding.map.visibility          = if (mode == Mode.MAP) View.VISIBLE else View.GONE
+        // Content: full-screen map for Map mode; the Raw/Live/Settings forms
+        // (in the scroll) otherwise.
+        binding.map.visibility           = if (mode == Mode.MAP) View.VISIBLE else View.GONE
         binding.contentScroll.visibility = if (mode == Mode.MAP) View.GONE else View.VISIBLE
-        binding.panelRaw.visibility  = if (mode == Mode.RAW)  View.VISIBLE else View.GONE
-        binding.panelLive.visibility = if (mode == Mode.LIVE) View.VISIBLE else View.GONE
-        // Drawer: map options only in Map mode; Start-TX button is replaced by
-        // Play/Pause/Stop there.
+        binding.panelLive.visibility     = if (mode == Mode.LIVE)     View.VISIBLE else View.GONE
+        binding.panelSettings.visibility = if (mode == Mode.SETTINGS) View.VISIBLE else View.GONE
+        // Drawer: map options only in Map mode; the Start-TX button applies to
+        // the LLH tab (Map uses Play/Pause/Stop; Settings has no TX action).
         binding.panelMap.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
         binding.fabColumn.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
-        binding.txButton.visibility = if (mode == Mode.MAP) View.GONE else View.VISIBLE
+        binding.txButton.visibility = if (mode == Mode.LIVE) View.VISIBLE else View.GONE
         updateMapFabs()
     }
 
+    // ---- HackRF connect / disconnect --------------------------------------
+
+    private fun setupDeviceControls() {
+        binding.btnConnect.setOnClickListener {
+            if (hackrf != null) onDisconnect() else onConnect()
+        }
+        updateConnUi()
+    }
+
+    private fun onConnect() {
+        if (hackrf != null || connecting) return
+        connecting = true
+        updateConnUi()
+        appendStatus("connecting to HackRF over USB...")
+        scope.launch {
+            val result = runCatching {
+                HackrfTxController(applicationContext).apply {
+                    setAmp(ampEnabled)
+                    setVgaGain(vgaGain)
+                    openAsync()
+                }
+            }
+            connecting = false
+            result.fold(
+                onSuccess = { hackrf = it; appendStatus("HackRF connected.") },
+                onFailure = { t -> appendStatus("connect failed: ${t.message}") }
+            )
+            updateConnUi()
+        }
+    }
+
+    private fun onDisconnect() {
+        if (txRunning) stopEverything()
+        hackrf?.stopTx()
+        hackrf = null
+        updateConnUi()
+        appendStatus("HackRF disconnected.")
+    }
+
+    private fun updateConnUi() {
+        val connected = hackrf != null
+        // Single toggle button: label + icon reflect the connection state.
+        binding.btnConnect.isEnabled = !connecting
+        binding.btnConnect.text = when {
+            connecting -> "⏳ Connecting…"
+            connected  -> "⛔ Disconnect"
+            else       -> "🔌 Connect"
+        }
+        binding.connStatus.text = when {
+            connecting            -> "Connecting…"
+            connected && txRunning -> "Connected — transmitting"
+            connected             -> "Connected"
+            else                  -> "Disconnected"
+        }
+        // Start TX / Play need a connected device.
+        binding.txButton.isEnabled = connected
+        updateMapButtons()
+    }
+
     private fun setupRfControls() {
+        // Restore persisted TX settings.
+        ampEnabled = settingsPrefs.getBoolean("amp", false)
+        vgaGain = settingsPrefs.getInt("vga", 0)
+
+        binding.timenowSwitch.isChecked = settingsPrefs.getBoolean("retime", true)
+        binding.timenowSwitch.setOnCheckedChangeListener { _, checked ->
+            settingsPrefs.edit().putBoolean("retime", checked).apply()
+        }
+
         binding.ampSwitch.isChecked = ampEnabled
         binding.ampSwitch.setOnCheckedChangeListener { _, checked ->
             ampEnabled = checked
-            tx?.setAmp(checked)
+            settingsPrefs.edit().putBoolean("amp", checked).apply()
+            hackrf?.setAmp(checked)
             appendStatus("amp: ${if (checked) "ON (+14 dB)" else "off"}")
         }
 
@@ -260,10 +354,11 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
                 vgaGain = value
                 binding.vgaLabel.text = "TX VGA Gain: $value dB"
-                if (fromUser) tx?.setVgaGain(value)
+                if (fromUser) hackrf?.setVgaGain(value)
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {
+                settingsPrefs.edit().putInt("vga", vgaGain).apply()
                 appendStatus("vga gain: $vgaGain dB")
             }
         })
@@ -282,6 +377,7 @@ class MainActivity : AppCompatActivity() {
         binding.presetRun.setOnClickListener  { binding.speedSeek.progress = 9 }
         binding.presetMoto.setOnClickListener { binding.speedSeek.progress = 40 }
         binding.presetCar.setOnClickListener  { binding.speedSeek.progress = 100 }
+        binding.setPosButton.setOnClickListener { onSetPosition() }
     }
 
     // ======================================================================
@@ -289,75 +385,35 @@ class MainActivity : AppCompatActivity() {
     // ======================================================================
 
     private fun onTxClicked() {
-        if (tx != null) { stopEverything(); return }
+        if (txRunning) { stopEverything(); return }
         when (mode) {
-            Mode.RAW  -> startRawTx()
             Mode.LIVE -> startLiveTx()
-            Mode.MAP  -> {} // Map uses Play/Pause/Stop instead of this button
+            Mode.MAP, Mode.SETTINGS -> {} // no Start-TX button in these modes
         }
     }
 
+    /** Stop transmitting. The USB device stays connected (use Disconnect for that). */
     private fun stopEverything() {
         appendStatus("stopping TX...")
         routePlaying = false
         routePaused = false
         stopMotionLoop()
         stopRouteLoop()
-        tx?.stop()
-        tx = null
+        hackrf?.stopTx()
+        txRunning = false
         binding.txButton.text = "Start TX"
         setLiveControlsEnabled(false)
         // Reset route playback UI + cursor.
         routeProgress = 0.0
+        direction = 1
+        loopsDone = 0
+        stopRemainingMs = 0.0
         removeCursor()
         setMapEditEnabled(true)
         updateMapButtons()
         setTabsEnabled(true)
+        updateConnUi()
         appendStatus("TX stopped.")
-    }
-
-    /** Static single-position TX — the original "Raw LLH" path. */
-    private fun startRawTx() {
-        val locationArg = readRawLocationOrNull() ?: run {
-            appendStatus("fix the location fields first"); return
-        }
-        val retimeNow = binding.timenowSwitch.isChecked
-        binding.txButton.isEnabled = false
-        setTabsEnabled(false)
-        appendStatus("opening HackRF over USB at $locationArg...")
-        scope.launch {
-            val result = runCatching {
-                val ctrl = newController()
-                ctrl.openAsync()
-                appendStatus("HackRF ready; starting generator + TX")
-                withContext(Dispatchers.IO) {
-                    val ephem = copyAssetToFiles("brdc0010.22n")
-                    appendStatus("ephemeris: ${ephem.absolutePath}")
-                    val dummyOut = File(filesDir, "unused.bin")
-                    val args = buildList {
-                        add("gps-sdr-sim")
-                        add("-e"); add(ephem.absolutePath)
-                        add("-l"); add(locationArg)
-                        add("-b"); add("8")
-                        if (retimeNow) { add("-T"); add("now") }
-                        add("-H")
-                        add("-o"); add(dummyOut.absolutePath)
-                    }.toTypedArray()
-                    NativeGen.startStreaming(args)
-                }
-                ctrl.startTx()
-                ctrl
-            }
-            result.fold(
-                onSuccess = { ctrl ->
-                    tx = ctrl
-                    binding.txButton.text = "Stop TX"
-                    appendStatus("TX running.")
-                },
-                onFailure = { t -> onTxStartFailed(t) }
-            )
-            binding.txButton.isEnabled = true
-        }
     }
 
     private fun startLiveTx() {
@@ -367,8 +423,20 @@ class MainActivity : AppCompatActivity() {
         beginLiveTx(seed.first, seed.second, seed.third) {
             setLiveControlsEnabled(true)
             startMotionLoop()
-            appendStatus("Live TX running. Push the joystick to move.")
+            appendStatus("TX running. Type an LLH + Set to override, or use the joystick.")
         }
+    }
+
+    /** Override the current position with the typed LLH (teleport-capable). */
+    private fun onSetPosition() {
+        val seed = readLiveSeedOrNull() ?: run {
+            appendStatus("fix the location fields first"); return
+        }
+        liveLat = seed.first; liveLon = seed.second; liveHgt = seed.third
+        velE = 0.0; velN = 0.0
+        binding.joystick.reset()
+        NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
+        appendStatus("position set: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}, ${fmt(liveHgt, 1)} m")
     }
 
     /**
@@ -377,17 +445,17 @@ class MainActivity : AppCompatActivity() {
      * and invokes [onRunning] on success.
      */
     private fun beginLiveTx(seedLat: Double, seedLon: Double, seedHgt: Double, onRunning: () -> Unit) {
+        val ctrl = hackrf ?: run {
+            appendStatus("connect the HackRF first (Controls → Connect)"); return
+        }
         liveLat = seedLat; liveLon = seedLon; liveHgt = seedHgt
         velE = 0.0; velN = 0.0
         val retimeNow = binding.timenowSwitch.isChecked
         binding.txButton.isEnabled = false
         setTabsEnabled(false)
-        appendStatus("opening HackRF over USB (live) at $seedLat,$seedLon,$seedHgt...")
+        appendStatus("starting generator + TX at $seedLat,$seedLon,$seedHgt...")
         scope.launch {
             val result = runCatching {
-                val ctrl = newController()
-                ctrl.openAsync()
-                appendStatus("HackRF ready; starting live generator + TX")
                 withContext(Dispatchers.IO) {
                     val ephem = copyAssetToFiles("brdc0010.22n")
                     appendStatus("ephemeris: ${ephem.absolutePath}")
@@ -404,12 +472,12 @@ class MainActivity : AppCompatActivity() {
                     NativeGen.pushPosition(liveLat, liveLon, liveHgt)
                 }
                 ctrl.startTx()
-                ctrl
             }
             result.fold(
-                onSuccess = { ctrl ->
-                    tx = ctrl
+                onSuccess = {
+                    txRunning = true
                     binding.txButton.text = "Stop TX"
+                    updateConnUi()
                     onRunning()
                 },
                 onFailure = { t -> onTxStartFailed(t) }
@@ -421,20 +489,16 @@ class MainActivity : AppCompatActivity() {
     private fun onTxStartFailed(t: Throwable) {
         Log.e("MainActivity", "TX startup failed", t)
         appendStatus("TX failed: ${t.message}")
-        tx?.stop(); tx = null
+        hackrf?.stopTx()          // stop the stream but stay connected
+        txRunning = false
         setLiveControlsEnabled(false)
         stopRouteLoop()
         routePlaying = false; routePaused = false
         setMapEditEnabled(true)
         updateMapButtons()
         setTabsEnabled(true)
+        updateConnUi()
     }
-
-    private fun newController(): HackrfTxController =
-        HackrfTxController(applicationContext).apply {
-            setAmp(ampEnabled)
-            setVgaGain(vgaGain)
-        }
 
     // ======================================================================
     //  Live joystick motion loop
@@ -479,13 +543,18 @@ class MainActivity : AppCompatActivity() {
             liveLon += velE * dt / (METERS_PER_DEG_LAT * cosLat)
             if (liveLon > 180.0) liveLon -= 360.0
             if (liveLon < -180.0) liveLon += 360.0
-            binding.liveHgtInput.text?.toString()?.trim()?.toDoubleOrNull()?.let { liveHgt = it }
-            binding.liveLatInput.setText(fmt(liveLat, 6))
-            binding.liveLonInput.setText(fmt(liveLon, 6))
+            // Track height from its field (unless the user is editing it), and
+            // reflect the moving position back into the lat/lon fields — but not
+            // while a field has focus, so a manual override isn't clobbered.
+            if (!binding.liveHgtInput.hasFocus())
+                binding.liveHgtInput.text?.toString()?.trim()?.toDoubleOrNull()?.let { liveHgt = it }
+            if (!binding.liveLatInput.hasFocus()) binding.liveLatInput.setText(fmt(liveLat, 6))
+            if (!binding.liveLonInput.hasFocus()) binding.liveLonInput.setText(fmt(liveLon, 6))
             NativeGen.pushPosition(liveLat, liveLon, liveHgt)
         }
         binding.liveReadout.text =
-            "v = ${fmt(speed * 3.6, 1)} km/h   ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}"
+            "TX: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}, ${fmt(liveHgt, 1)} m\n" +
+                "v = ${fmt(speed * 3.6, 1)} km/h"
     }
 
     private fun setLiveControlsEnabled(enabled: Boolean) {
@@ -495,8 +564,9 @@ class MainActivity : AppCompatActivity() {
         binding.presetRun.isEnabled = enabled
         binding.presetMoto.isEnabled = enabled
         binding.presetCar.isEnabled = enabled
-        binding.liveLatInput.isEnabled = !enabled
-        binding.liveLonInput.isEnabled = !enabled
+        // The lat/lon/height fields stay editable throughout (they seed the run,
+        // then override it via "Set position"), which is only actionable while TX.
+        binding.setPosButton.isEnabled = enabled
         if (!enabled) {
             stopMotionLoop()
             binding.joystick.reset()
@@ -525,16 +595,29 @@ class MainActivity : AppCompatActivity() {
         }
         map.setTileSource(esri)
         map.setMultiTouchControls(true)
+        // Esri's tiles top out around z19; cap zoom there so we never show blurry
+        // upscaled tiles (which look like "map data not yet available").
+        map.minZoomLevel = 3.0
+        map.maxZoomLevel = 22.0
         map.controller.setZoom(12.0)
         map.controller.setCenter(GeoPoint(35.68, 139.76))
 
         val receiver = object : MapEventsReceiver {
             override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
-                if (tx != null) return false   // route is locked while transmitting
+                if (txRunning) return false   // route is locked while transmitting
                 addWaypoint(p.latitude, p.longitude, null)
                 return true
             }
-            override fun longPressHelper(p: GeoPoint): Boolean = false
+            override fun longPressHelper(p: GeoPoint): Boolean {
+                // Long-press = set the simulated position directly (teleport),
+                // like the reference's right-click. Only while transmitting.
+                if (!txRunning) return false
+                liveLat = p.latitude; liveLon = p.longitude; velE = 0.0; velN = 0.0
+                NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
+                updateCursor(GeoPt(liveLat, liveLon, liveHgt))
+                appendStatus("sim position set: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}")
+                return true
+            }
         }
         map.overlays.add(MapEventsOverlay(receiver))
 
@@ -585,23 +668,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupMapControls() {
-        // Restore any saved GraphHopper key.
+    /** GraphHopper key lives in the Settings tab; only valid keys are saved. */
+    private fun setupSettingsControls() {
         val prefs = getSharedPreferences("map_prefs", Context.MODE_PRIVATE)
         binding.ghKeyInput.setText(prefs.getString("gh_key", ""))
-        binding.ghKeyInput.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) {
-                prefs.edit().putString("gh_key", s?.toString().orEmpty()).apply()
-                scheduleRouteFetch()
-            }
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-        })
+        binding.ghTestButton.setOnClickListener { onTestGhKey() }
+    }
 
+    private fun onTestGhKey() {
+        val key = binding.ghKeyInput.text?.toString()?.trim().orEmpty()
+        if (key.isBlank()) { binding.ghKeyStatus.text = "Enter a key first"; return }
+        binding.ghTestButton.isEnabled = false
+        binding.ghKeyStatus.text = "Testing…"
+        scope.launch {
+            val result = runCatching {
+                // A trivial two-point route: succeeds only with a working key.
+                GraphHopperRouter.route(
+                    listOf(GeoPt(35.680, 139.760), GeoPt(35.690, 139.770)), "car", key
+                )
+            }
+            binding.ghTestButton.isEnabled = true
+            result.fold(
+                onSuccess = {
+                    getSharedPreferences("map_prefs", Context.MODE_PRIVATE)
+                        .edit().putString("gh_key", key).apply()
+                    binding.ghKeyStatus.text = "Key valid — saved ✓"
+                    scheduleRouteFetch()   // re-route now that a key is available
+                },
+                onFailure = { e -> binding.ghKeyStatus.text = "Invalid: ${e.message}" }
+            )
+        }
+    }
+
+    private fun setupMapControls() {
         binding.roadSwitch.setOnCheckedChangeListener { _, checked ->
-            val vis = if (checked) View.VISIBLE else View.GONE
-            binding.profileGroup.visibility = vis
-            binding.ghKeyLayout.visibility = vis
+            binding.profileGroup.visibility = if (checked) View.VISIBLE else View.GONE
             if (!checked) routeGeo = emptyList()
             scheduleRouteFetch()
             redrawMap()
@@ -609,20 +710,50 @@ class MainActivity : AppCompatActivity() {
         binding.profileGroup.setOnCheckedChangeListener { _, _ -> scheduleRouteFetch() }
 
         binding.btnWpUndo.setOnClickListener {
-            if (tx != null || waypoints.isEmpty()) return@setOnClickListener
+            if (txRunning || waypoints.isEmpty()) return@setOnClickListener
             waypoints.removeAt(waypoints.size - 1)
-            updateWpCount(); redrawMap(); scheduleRouteFetch()
+            selectedWaypoint = -1
+            updateWpCount(); redrawMap(); scheduleRouteFetch(); updateMapFabs()
         }
         binding.btnWpClear.setOnClickListener { clearWaypoints() }
+        binding.btnWpAdd.setOnClickListener { onManualAddWaypoint() }
 
-        binding.mapSpeedLabel.text = "Speed: ${binding.mapSpeedSeek.progress} km/h"
+        binding.autoAltSwitch.setOnCheckedChangeListener { _, _ -> scheduleRouteFetch() }
+        binding.showTrkptSwitch.setOnCheckedChangeListener { _, _ -> redrawMap() }
+        binding.mapAltInput.doAfterTextChanged { updateWpList(); updateRouteInfo() }
+        binding.repeatGroup.setOnCheckedChangeListener { _, id ->
+            repeatMode = when (id) {
+                R.id.repeat_bounce -> RepeatMode.BOUNCE
+                R.id.repeat_loop   -> RepeatMode.LOOP
+                else               -> RepeatMode.OFF
+            }
+            binding.loopCountRow.visibility = if (repeatMode == RepeatMode.OFF) View.GONE else View.VISIBLE
+            direction = 1
+            scheduleRouteFetch()   // re-route so the road loop's closing leg is added/removed
+            redrawMap()            // straight-line loop shows the closing leg immediately
+            updateRouteInfo()
+        }
+
         binding.mapSpeedSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                binding.mapSpeedLabel.text = "Speed: $value km/h"
+                if (!syncingSpeed) {
+                    syncingSpeed = true
+                    binding.mapSpeedInput.setText(value.toString())
+                    syncingSpeed = false
+                }
+                updateRouteInfo()
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {}
         })
+        binding.mapSpeedInput.doAfterTextChanged {
+            if (syncingSpeed) return@doAfterTextChanged
+            val v = it?.toString()?.trim()?.toDoubleOrNull() ?: return@doAfterTextChanged
+            syncingSpeed = true
+            binding.mapSpeedSeek.progress = v.toInt().coerceIn(0, binding.mapSpeedSeek.max)
+            syncingSpeed = false
+            updateRouteInfo()
+        }
         binding.mapPresetWalk.setOnClickListener { binding.mapSpeedSeek.progress = 3 }
         binding.mapPresetRun.setOnClickListener  { binding.mapSpeedSeek.progress = 9 }
         binding.mapPresetMoto.setOnClickListener { binding.mapSpeedSeek.progress = 40 }
@@ -637,7 +768,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnStop.setOnClickListener { stopEverything() }
 
         binding.btnGpxLoad.setOnClickListener {
-            if (tx != null) return@setOnClickListener
+            if (txRunning) return@setOnClickListener
             openGpx.launch(arrayOf("application/gpx+xml", "application/xml", "text/xml", "*/*"))
         }
         binding.btnGpxExport.setOnClickListener {
@@ -654,7 +785,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectWaypoint(index: Int) {
-        if (tx != null) return           // route is locked while transmitting
+        if (txRunning) return           // route is locked while transmitting
         selectedWaypoint = index
         redrawMap()
         updateMapFabs()
@@ -663,7 +794,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun deleteSelectedWaypoint() {
         val i = selectedWaypoint
-        if (tx != null || i !in waypoints.indices) return
+        if (txRunning || i !in waypoints.indices) return
         waypoints.removeAt(i)
         selectedWaypoint = -1
         updateWpCount(); redrawMap(); scheduleRouteFetch()
@@ -675,7 +806,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun clearWaypoints() {
-        if (tx != null) return
+        if (txRunning) return
         waypoints.clear(); routeGeo = emptyList(); selectedWaypoint = -1
         updateWpCount(); redrawMap()
         setRouteStatus("Tap the map to add waypoints")
@@ -683,7 +814,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateMapFabs() {
-        val editable = mode == Mode.MAP && tx == null
+        val editable = mode == Mode.MAP && !txRunning
         binding.btnDeleteWp.visibility =
             if (editable && selectedWaypoint in waypoints.indices) View.VISIBLE else View.GONE
         binding.btnDeleteAll.visibility =
@@ -692,16 +823,82 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateWpCount() {
         binding.wpCount.text = "${waypoints.size} waypoint${if (waypoints.size == 1) "" else "s"}"
+        updateWpList()
+        updateRouteInfo()
     }
 
-    /** Geometry used for display, distance and playback interpolation. */
-    private fun activePts(): List<GeoPt> =
-        if (routeGeo.size >= 2) routeGeo else waypoints.toList()
+    private fun updateWpList() {
+        val fallback = mapAlt()
+        binding.wpList.text = waypoints.mapIndexed { i, w ->
+            // Show the waypoint's own altitude, or the map Altitude fallback that
+            // playback uses when a point has none.
+            val h = (w.alt ?: fallback).toInt()
+            "${i + 1}: ${fmt(w.lat, 5)}, ${fmt(w.lon, 5)}  ${h} m"
+        }.joinToString("\n")
+    }
+
+    private fun onManualAddWaypoint() {
+        if (txRunning) return
+        val lat = binding.wpLatInput.text?.toString()?.trim()?.toDoubleOrNull()
+        val lon = binding.wpLngInput.text?.toString()?.trim()?.toDoubleOrNull()
+        if (lat == null || abs(lat) > 90.0 || lon == null || abs(lon) > 180.0) {
+            setRouteStatus("Enter a valid lat / lon to add"); return
+        }
+        addWaypoint(lat, lon, null)
+        binding.wpLatInput.setText(""); binding.wpLngInput.setText("")
+        binding.map.controller.animateTo(GeoPoint(lat, lon))
+    }
+
+    /**
+     * Geometry used for display, distance and playback interpolation. In Loop
+     * mode the route closes back to waypoint 1: for a road route the closing leg
+     * is routed by GraphHopper (fetchRoute appends the first waypoint), so
+     * routeGeo already closes; for a straight-line route we append it here.
+     */
+    private fun activePts(): List<GeoPt> {
+        val road = routeGeo.size >= 2
+        val base = if (road) routeGeo else waypoints.toList()
+        return if (repeatMode == RepeatMode.LOOP && !road && base.size >= 2) base + base.first() else base
+    }
 
     private fun mapAlt(): Double =
-        binding.mapAltInput.text?.toString()?.trim()?.toDoubleOrNull() ?: 100.0
+        binding.mapAltInput.text?.toString()?.trim()?.toDoubleOrNull() ?: 10.0
 
     private fun setRouteStatus(text: String) { binding.routeStatus.text = text }
+
+    /** The structured Route Info panel (distance / ETA / trkpt / live progress). */
+    private fun updateRouteInfo() {
+        val pts = activePts()
+        val total = RouteGeometry.totalDistance(pts)
+        val speedKmh = binding.mapSpeedSeek.progress.coerceAtLeast(1)
+        val etaMin = if (total > 0) (total / 1000.0) / speedKmh * 60.0 else 0.0
+        val sb = StringBuilder()
+        sb.append("Distance   ${fmtDist(total)}\n")
+        sb.append("Est. time  ${fmtDuration(etaMin)}\n")
+        sb.append("Trkpt      ${pts.size}")
+        if (txRunning) {
+            val pct = if (total > 0) (routeProgress / total * 100).toInt() else 0
+            sb.append("\nProgress   $pct%")
+            if (repeatMode != RepeatMode.OFF) sb.append("\nLap        $loopsDone${loopLimitLabel()}")
+            // Currently transmitted position (fed to gps-sdr-sim this tick).
+            sb.append("\nSim LLH    ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}, ${fmt(liveHgt, 1)} m")
+        }
+        binding.routeInfo.text = sb.toString()
+    }
+
+    private fun fmtDuration(minutes: Double): String {
+        if (minutes <= 0) return "—"
+        val total = minutes.toInt()
+        return if (total < 60) "$total min" else "${total / 60}h ${total % 60}m"
+    }
+
+    private fun loopLimit(): Int =
+        binding.loopCountInput.text?.toString()?.trim()?.toIntOrNull()?.takeIf { it > 0 } ?: 0
+
+    private fun loopLimitLabel(): String {
+        val n = loopLimit()
+        return if (n > 0) " / $n" else ""
+    }
 
     private fun redrawMap() {
         val map = binding.map
@@ -720,8 +917,27 @@ class MainActivity : AppCompatActivity() {
             routeLine = line
             map.overlays.add(line)
         }
-        // Waypoint markers on top of the line. Tapping one selects it (for
-        // deletion); the selected marker is tinted.
+        // Track points: small dots at each route vertex (sampled to stay light).
+        if (binding.showTrkptSwitch.isChecked && pts.size >= 2) {
+            val trkDot = BitmapDrawable(resources, makeSmallDot(0xFF7E57C2.toInt()))
+            val stepT = max(1, pts.size / MAX_TRKPT_MARKERS)
+            var i = 0
+            while (i < pts.size) {
+                val tp = pts[i]
+                val m = Marker(map).apply {
+                    position = GeoPoint(tp.lat, tp.lon)
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                    icon = trkDot
+                    infoWindow = null
+                    setOnMarkerClickListener { _, _ -> false }
+                }
+                wpMarkers.add(m)
+                map.overlays.add(m)
+                i += stepT
+            }
+        }
+        // Waypoint markers on top of the line. Tap to select (for deletion);
+        // drag to move (when not transmitting). The selected marker is tinted.
         waypoints.forEachIndexed { i, w ->
             val m = Marker(map).apply {
                 position = GeoPoint(w.lat, w.lon)
@@ -729,7 +945,17 @@ class MainActivity : AppCompatActivity() {
                 icon = makeNumberedMarker(i + 1, i == selectedWaypoint)
                 title = "Waypoint ${i + 1}"
                 infoWindow = null   // no gray info bubble on tap
+                isDraggable = !txRunning
                 setOnMarkerClickListener { _, _ -> selectWaypoint(i); true }
+                setOnMarkerDragListener(object : Marker.OnMarkerDragListener {
+                    override fun onMarkerDragStart(mk: Marker) {}
+                    override fun onMarkerDrag(mk: Marker) {}
+                    override fun onMarkerDragEnd(mk: Marker) {
+                        if (txRunning || i !in waypoints.indices) return
+                        waypoints[i] = GeoPt(mk.position.latitude, mk.position.longitude, null)
+                        updateWpCount(); redrawMap(); scheduleRouteFetch(); updateRouteInfo()
+                    }
+                })
             }
             wpMarkers.add(m)
             map.overlays.add(m)
@@ -754,6 +980,17 @@ class MainActivity : AppCompatActivity() {
             style = Paint.Style.FILL; this.color = Color.WHITE
         })
         canvas.drawCircle(c, c, c - 3f * d, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL; this.color = color
+        })
+        return bmp
+    }
+
+    /** A tiny solid dot for track-point markers. */
+    private fun makeSmallDot(color: Int): Bitmap {
+        val d = resources.displayMetrics.density
+        val size = (7 * d).toInt().coerceAtLeast(6)
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawCircle(size / 2f, size / 2f, size / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL; this.color = color
         })
         return bmp
@@ -798,6 +1035,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun scheduleRouteFetch() {
         mapHandler.removeCallbacks(routeFetchRunnable)
+        mapHandler.removeCallbacks(ghRetryRunnable)   // a fresh request cancels any retry countdown
         mapHandler.postDelayed(routeFetchRunnable, ROUTE_DEBOUNCE_MS)
     }
 
@@ -806,27 +1044,66 @@ class MainActivity : AppCompatActivity() {
         if (!binding.roadSwitch.isChecked || waypoints.size < 2) {
             routeGeo = emptyList()
             redrawMap()
+            maybeEnrichElevation()   // straight-line: fill waypoint altitudes
             return
         }
         val key = binding.ghKeyInput.text?.toString()?.trim().orEmpty()
-        if (key.isBlank()) { setRouteStatus("Enter your GraphHopper API key for road routing"); return }
+        if (key.isBlank()) { setRouteStatus("Set your GraphHopper API key in Settings for road routing"); return }
         val profile = when (binding.profileGroup.checkedRadioButtonId) {
             R.id.profile_bike -> "bike"
             R.id.profile_car  -> "car"
             else              -> "foot"
         }
-        val wps = waypoints.toList()
+        // In loop mode, append the first waypoint so GraphHopper routes the
+        // closing leg (last → first) along roads.
+        val loop = repeatMode == RepeatMode.LOOP && waypoints.size >= 2
+        val wps = if (loop) waypoints.toList() + waypoints.first() else waypoints.toList()
         setRouteStatus("Calculating route…")
         routeJob = scope.launch {
             try {
                 val geo = GraphHopperRouter.route(wps, profile, key)
                 routeGeo = geo
                 redrawMap()
-                setRouteStatus("Road route ($profile) · ${fmtDist(RouteGeometry.totalDistance(geo))}")
+                updateRouteInfo()
+                setRouteStatus("Road route ($profile) · ${fmtDist(RouteGeometry.totalDistance(activePts()))}")
+                maybeEnrichElevation()
             } catch (e: Exception) {
                 routeGeo = emptyList()
                 redrawMap()
-                setRouteStatus("Routing failed: ${e.message} — using straight line")
+                val msg = e.message?.lowercase().orEmpty()
+                if ("limit" in msg || "rate" in msg || "quota" in msg || "429" in msg) {
+                    // GraphHopper free-tier throttle: count down and auto-retry.
+                    ghRetrySecs = 15
+                    mapHandler.removeCallbacks(ghRetryRunnable)
+                    mapHandler.post(ghRetryRunnable)
+                } else {
+                    setRouteStatus("Routing failed: ${e.message} — using straight line")
+                }
+            }
+        }
+    }
+
+    /** When "Auto altitude" is on, fill SRTM elevations along the active route. */
+    private fun maybeEnrichElevation() {
+        if (!binding.autoAltSwitch.isChecked) return
+        val road = routeGeo.size >= 2
+        val target = if (road) routeGeo else waypoints.toList()
+        if (target.size < 2) return
+        elevJob?.cancel()
+        elevJob = scope.launch {
+            try {
+                val enriched = ElevationClient.enrich(target)
+                if (road) {
+                    routeGeo = enriched
+                } else {
+                    waypoints.clear(); waypoints.addAll(enriched); selectedWaypoint = -1
+                }
+                redrawMap(); updateWpList()
+                val alts = enriched.mapNotNull { it.alt }
+                val range = if (alts.isNotEmpty()) " · ${alts.min().toInt()}–${alts.max().toInt()} m" else ""
+                setRouteStatus("Route · ${fmtDist(RouteGeometry.totalDistance(activePts()))}$range")
+            } catch (e: Exception) {
+                setRouteStatus("Elevation fetch failed: ${e.message}")
             }
         }
     }
@@ -839,14 +1116,17 @@ class MainActivity : AppCompatActivity() {
         val pts = activePts()
         if (pts.isEmpty()) { setRouteStatus("Add at least one waypoint"); return }
 
-        if (tx == null) {
+        if (!txRunning) {
             val seed = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
             setMapEditEnabled(false)
+            direction = 1; loopsDone = 0; stopRemainingMs = 0.0
+            stopCheckpoints = computeCheckpoints(pts)
             beginLiveTx(seed.lat, seed.lon, seed.alt ?: mapAlt()) {
                 routePlaying = true; routePaused = false
                 startRouteLoop()
                 updateMapButtons()
-                appendStatus("Route playback started.")
+                updateRouteInfo()
+                appendStatus("Route playback started (${repeatMode.name.lowercase()}).")
             }
         } else {
             // Resume from pause.
@@ -857,10 +1137,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onPauseClicked() {
-        if (tx == null) return
+        if (!txRunning) return
         routePaused = true
         setRouteStatus("Paused · ${routeProgressLabel()}")
         updateMapButtons()
+        updateRouteInfo()
     }
 
     private fun startRouteLoop() {
@@ -885,24 +1166,128 @@ class MainActivity : AppCompatActivity() {
 
         val pts = activePts()
         val total = RouteGeometry.totalDistance(pts)
-        val speed = binding.mapSpeedSeek.progress.toDouble() / 3.6 // km/h -> m/s
-        routeProgress += speed * dt
+        if (total <= 0.0) return
+        val speedKmh = binding.mapSpeedSeek.progress
+
+        // Random-stop hold: sit still until the timer expires.
+        if (stopRemainingMs > 0.0) {
+            stopRemainingMs -= dt * 1000.0
+            pushAndShow(pts, total, speedKmh, "Stopped ${(stopRemainingMs / 1000).toInt() + 1}s")
+            return
+        }
+
+        // Speed jitter: ± a fraction of the base speed each tick.
+        val jitter = dynJitter()
+        val jf = if (jitter > 0.0) 1.0 + (Random.nextDouble() * 2 - 1) * jitter else 1.0
+        val speed = speedKmh.toDouble() / 3.6 * jf
+
+        val stopProb = dynStopProb()
+        val prev = routeProgress
+        routeProgress += direction * speed * dt
 
         var done = false
-        if (routeProgress >= total) { routeProgress = total; done = true }
+        if (routeProgress >= total) {
+            when (repeatMode) {
+                RepeatMode.OFF    -> { routeProgress = total; done = true }
+                RepeatMode.BOUNCE -> { routeProgress = total; direction = -1; rollStop() }
+                RepeatMode.LOOP   -> {
+                    routeProgress -= total; loopsDone++
+                    if (reachedLoopLimit()) { routeProgress = total; done = true } else rollStop()
+                }
+            }
+        } else if (routeProgress <= 0.0) {
+            routeProgress = 0.0
+            if (repeatMode == RepeatMode.BOUNCE && direction == -1) {
+                loopsDone++; direction = 1
+                if (reachedLoopLimit()) done = true else rollStop()
+            }
+        }
 
-        val p = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
-        liveLat = p.lat; liveLon = p.lon; liveHgt = p.alt ?: mapAlt()
-        NativeGen.pushPosition(liveLat, liveLon, liveHgt)
-        updateCursor(p)
-        setRouteStatus("Playing · ${routeProgressLabel()} · ${binding.mapSpeedSeek.progress} km/h")
+        // Random stop when crossing an intermediate waypoint.
+        if (stopRemainingMs == 0.0 && stopProb > 0.0) {
+            for (cp in stopCheckpoints) {
+                val crossed = (prev < cp && routeProgress >= cp) || (prev > cp && routeProgress <= cp)
+                if (crossed && Random.nextDouble() < stopProb) {
+                    routeProgress = cp
+                    stopRemainingMs = randomStopMs()
+                    break
+                }
+            }
+        }
 
+        pushAndShow(pts, total, speedKmh, null)
         if (done) {
             routePaused = true
             updateMapButtons()
             appendStatus("Route complete.")
-            setRouteStatus("Complete · ${fmtDist(total)}")
         }
+    }
+
+    /** Push the current interpolated position and update the realtime info line. */
+    private fun pushAndShow(pts: List<GeoPt>, total: Double, speedKmh: Int, holdNote: String?) {
+        val p = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
+        liveLat = p.lat; liveLon = p.lon; liveHgt = p.alt ?: mapAlt()
+        NativeGen.pushPosition(liveLat, liveLon, liveHgt)
+        updateCursor(p)
+        updateRouteInfo()
+
+        val pct = (routeProgress / total * 100).toInt()
+        val modeTag = when (repeatMode) {
+            RepeatMode.OFF -> ""; RepeatMode.BOUNCE -> " ⇄"; RepeatMode.LOOP -> " ↻"
+        }
+        val loops = if (repeatMode != RepeatMode.OFF) " · lap $loopsDone" else ""
+        val head = holdNote ?: "Playing$modeTag"
+        val kmh = if (holdNote != null) "0" else "$speedKmh"
+        setRouteStatus(
+            "$head · $pct% · ${fmtDist(routeProgress)}/${fmtDist(total)} · " +
+                "$kmh km/h · ${fmt(p.lat, 5)}, ${fmt(p.lon, 5)} · ${liveHgt.toInt()} m$loops"
+        )
+    }
+
+    // ---- Dynamics helpers -------------------------------------------------
+
+    private fun dynJitter(): Double =
+        (binding.dynJitterInput.text?.toString()?.trim()?.toDoubleOrNull() ?: 0.0).coerceIn(0.0, 0.99)
+
+    private fun dynStopProb(): Double =
+        (binding.dynStopprobInput.text?.toString()?.trim()?.toDoubleOrNull() ?: 0.0).coerceIn(0.0, 1.0)
+
+    private fun randomStopMs(): Double {
+        val minS = binding.dynStopminInput.text?.toString()?.trim()?.toDoubleOrNull() ?: 0.0
+        val maxS = max(minS, binding.dynStopmaxInput.text?.toString()?.trim()?.toDoubleOrNull() ?: 0.0)
+        return (minS + Random.nextDouble() * (maxS - minS)) * 1000.0
+    }
+
+    private fun rollStop() {
+        if (dynStopProb() > 0.0 && Random.nextDouble() < dynStopProb()) stopRemainingMs = randomStopMs()
+    }
+
+    /** Distances (along the route) where a random stop may occur. */
+    private fun computeCheckpoints(pts: List<GeoPt>): List<Double> {
+        if (pts.size < 2) return emptyList()
+        val cum = DoubleArray(pts.size)
+        for (i in 1 until pts.size) {
+            cum[i] = cum[i - 1] +
+                RouteGeometry.haversine(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon)
+        }
+        // "Also stop at track points" → every vertex; otherwise only user waypoints.
+        return if (binding.stopTrkptSwitch.isChecked) {
+            cum.drop(1).dropLast(1)   // interior vertices (endpoints handled separately)
+        } else {
+            waypoints.map { w ->
+                var best = 0; var bestD = Double.MAX_VALUE
+                pts.forEachIndexed { i, p ->
+                    val dd = RouteGeometry.haversine(w.lat, w.lon, p.lat, p.lon)
+                    if (dd < bestD) { bestD = dd; best = i }
+                }
+                cum[best]
+            }
+        }
+    }
+
+    private fun reachedLoopLimit(): Boolean {
+        val n = loopLimit()
+        return n > 0 && loopsDone >= n
     }
 
     private fun routeProgressLabel(): String {
@@ -932,7 +1317,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateMapButtons() {
         val hasRoute = activePts().isNotEmpty()
-        val transmitting = tx != null
+        val transmitting = txRunning
         // Play: available when there's a route and we're either idle or paused.
         binding.btnPlay.isEnabled = hasRoute && (!transmitting || routePaused)
         binding.btnPause.isEnabled = transmitting && !routePaused
@@ -986,17 +1371,6 @@ class MainActivity : AppCompatActivity() {
     //  Input validation + misc
     // ======================================================================
 
-    private fun readRawLocationOrNull(): String? {
-        val lat = binding.rawLatInput.text?.toString()?.trim()?.toDoubleOrNull()
-        val lon = binding.rawLonInput.text?.toString()?.trim()?.toDoubleOrNull()
-        val hgt = binding.rawHgtInput.text?.toString()?.trim()?.toDoubleOrNull()
-        binding.rawLatInputLayout.error = latError(lat)
-        binding.rawLonInputLayout.error = lonError(lon)
-        binding.rawHgtInputLayout.error = if (hgt == null) "Enter a number" else null
-        if (latError(lat) != null || lonError(lon) != null || hgt == null) return null
-        return "$lat,$lon,$hgt"
-    }
-
     private fun readLiveSeedOrNull(): Triple<Double, Double, Double>? {
         val lat = binding.liveLatInput.text?.toString()?.trim()?.toDoubleOrNull()
         val lon = binding.liveLonInput.text?.toString()?.trim()?.toDoubleOrNull()
@@ -1026,21 +1400,25 @@ class MainActivity : AppCompatActivity() {
         if (m < 1000.0) "${m.toInt()} m" else "%.2f km".format(m / 1000.0)
 
     private fun setTabsEnabled(enabled: Boolean) {
-        // Lock mode switching while a transmission is in flight.
-        binding.modeRaw.isEnabled = enabled
-        binding.modeLive.isEnabled = enabled
-        binding.modeMap.isEnabled = enabled
+        // While a transmission is in flight, lock the TX modes so the generation
+        // can't be switched — but keep the active mode and Settings reachable so
+        // amp / VGA gain can still be adjusted live.
+        binding.modeLive.isEnabled = enabled || mode == Mode.LIVE
+        binding.modeMap.isEnabled = enabled || mode == Mode.MAP
+        binding.modeSettings.isEnabled = true
     }
 
     private fun appendStatus(line: String) {
         runOnUiThread {
-            val tv = binding.statusText
-            val prev = tv.text
-            tv.text = if (prev.isEmpty()) line else "$prev\n$line"
-            tv.post {
-                val layout = tv.layout ?: return@post
-                val bottom = layout.getLineTop(tv.lineCount) - tv.height
-                tv.scrollTo(0, if (bottom > 0) bottom else 0)
+            // Mirror the log to both the drawer and the Settings tab.
+            for (tv in listOf(binding.statusText, binding.statusTextSettings)) {
+                val prev = tv.text
+                tv.text = if (prev.isEmpty()) line else "$prev\n$line"
+                tv.post {
+                    val layout = tv.layout ?: return@post
+                    val bottom = layout.getLineTop(tv.lineCount) - tv.height
+                    tv.scrollTo(0, if (bottom > 0) bottom else 0)
+                }
             }
         }
     }
@@ -1065,6 +1443,7 @@ class MainActivity : AppCompatActivity() {
         private const val RAMP_DOWN_S = 0.8
         private const val FALLBACK_ACCEL = 5.0
         private const val ROUTE_DEBOUNCE_MS = 700L
+        private const val MAX_TRKPT_MARKERS = 250
         private const val LOCATION_BLUE = 0xFF1E88E5.toInt()  // real phone location
         private const val CURSOR_ORANGE = 0xFFFF9800.toInt()  // simulated route position
     }

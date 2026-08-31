@@ -3091,6 +3091,15 @@ int android_push_position(double lat_deg, double lon_deg, double hgt_m) {
     return 1;
 }
 
+// Force the position to an arbitrary point, bypassing the jump sanity-check.
+// Used for an explicit user override (typed LLH), which may teleport far. The
+// jump-check state is cleared so subsequent joystick moves are measured from
+// this new position.
+int android_force_position(double lat_deg, double lon_deg, double hgt_m) {
+    g_push_has_last = 0;
+    return android_push_position(lat_deg, lon_deg, hgt_m);
+}
+
 // Pull exactly `len` bytes into `dst`, blocking until either enough data is
 // available or the generator has been shut down. Returns bytes actually
 // copied; a short return means the generator stopped and the ring is drained.

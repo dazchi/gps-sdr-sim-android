@@ -38,6 +38,7 @@ class JoystickView @JvmOverloads constructor(
     private var centerY = 0f
     private var baseRadius = 0f
     private var thumbRadius = 0f
+    private var moveRadius = 0f
     private var thumbX = 0f
     private var thumbY = 0f
 
@@ -67,6 +68,9 @@ class JoystickView @JvmOverloads constructor(
         val pad = 12f
         baseRadius = min(w, h) / 2f - pad
         thumbRadius = baseRadius * 0.34f
+        // Limit the thumb's centre so the whole thumb stays inside the base
+        // circle (otherwise it clips at the edges).
+        moveRadius = baseRadius - thumbRadius
         thumbX = centerX
         thumbY = centerY
     }
@@ -95,14 +99,14 @@ class JoystickView @JvmOverloads constructor(
                 var dx = event.x - centerX
                 var dy = event.y - centerY
                 val dist = hypot(dx, dy)
-                if (dist > baseRadius && dist > 0f) {
-                    dx = dx / dist * baseRadius
-                    dy = dy / dist * baseRadius
+                if (dist > moveRadius && dist > 0f) {
+                    dx = dx / dist * moveRadius
+                    dy = dy / dist * moveRadius
                 }
                 thumbX = centerX + dx
                 thumbY = centerY + dy
-                xNorm = dx / baseRadius
-                yNorm = -dy / baseRadius // screen y is down; north is up
+                xNorm = dx / moveRadius
+                yNorm = -dy / moveRadius // screen y is down; north is up
                 invalidate()
                 onChange?.invoke(xNorm, yNorm)
             }

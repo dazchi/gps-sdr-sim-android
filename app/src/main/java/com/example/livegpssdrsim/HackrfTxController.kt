@@ -152,8 +152,12 @@ class HackrfTxController(private val appContext: Context) {
         }, "hackrf-setVga").start()
     }
 
-    /** Stop TX and release the device. Safe to call multiple times. */
-    fun stop() {
+    /**
+     * Stop the TX stream but keep the USB device open so it can be re-armed with
+     * another startTx(). Safe to call multiple times. Use for "Stop TX"; the app
+     * drops its reference to this controller to fully disconnect.
+     */
+    fun stopTx() {
         running.set(false)
         NativeGen.requestShutdown()
 

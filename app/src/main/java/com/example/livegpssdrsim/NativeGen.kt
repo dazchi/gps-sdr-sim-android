@@ -26,4 +26,10 @@ object NativeGen {
      * jump (> ~1 km from the previous position).
      */
     external fun pushPosition(lat: Double, lon: Double, hgt: Double): Int
+
+    /**
+     * Force the position to an arbitrary point, bypassing the ~1 km jump check.
+     * For an explicit user override (typed LLH) that may teleport far. Returns 1.
+     */
+    external fun pushPositionForce(lat: Double, lon: Double, hgt: Double): Int
 }
