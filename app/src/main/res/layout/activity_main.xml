@@ -192,6 +192,36 @@
                             android:text="Car\n100 km/h" />
                     </LinearLayout>
 
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Acceleration" />
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/live_accel_layout"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                            android:layout_width="120dp"
+                            android:layout_height="wrap_content"
+                            android:hint="m/s²">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/live_accel_input"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:enabled="false"
+                                android:inputType="numberDecimal"
+                                android:text="3" />
+                        </com.google.android.material.textfield.TextInputLayout>
+                    </LinearLayout>
+
                     <!-- Joystick centered in the space left below the controls -->
                     <FrameLayout
                         android:layout_width="match_parent"
@@ -480,6 +510,17 @@
                 app:useCompatPadding="true"
                 android:contentDescription="Center on my location" />
         </LinearLayout>
+
+        <!-- Map-mode manual-drive joystick (bottom-center; shown only while
+             transmitting a static hold). -->
+        <com.example.livegpssdrsim.JoystickView
+            android:id="@+id/map_joystick"
+            android:layout_width="190dp"
+            android:layout_height="190dp"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="24dp"
+            android:enabled="false"
+            android:visibility="gone" />
     </FrameLayout>
 
     <!-- ============================== DRAWER =============================== -->
@@ -821,6 +862,35 @@
                         android:lines="2"
                         android:textSize="11sp"
                         android:text="Car\n100 km/h" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Acceleration" />
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/map_accel_layout"
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                        android:layout_width="110dp"
+                        android:layout_height="wrap_content"
+                        android:hint="m/s²">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/map_accel_input"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="numberDecimal"
+                            android:text="3" />
+                    </com.google.android.material.textfield.TextInputLayout>
                 </LinearLayout>
 
                 <LinearLayout

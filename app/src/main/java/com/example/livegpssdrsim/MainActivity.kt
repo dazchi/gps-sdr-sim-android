@@ -50,6 +50,8 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 class MainActivity : AppCompatActivity() {
@@ -139,6 +141,7 @@ class MainActivity : AppCompatActivity() {
     // playback — leaves the map editable even though the HackRF is transmitting.
     private val routeLocked: Boolean get() = routePlaying
     private var routeProgress = 0.0                    // metres travelled along the route
+    private var routeSpeed = 0.0                        // current playback speed (m/s), ramped
     private var lastRouteTickMs: Long = 0L
     private var routeLoopRunning = false
     private var stopRemainingMs = 0.0                  // random-stop hold timer
@@ -348,6 +351,7 @@ class MainActivity : AppCompatActivity() {
         // position source (joystick loop ↔ route/static) without touching TX.
         if (txRunning && prev != newMode) handleTxSourceSwitch(newMode)
         updateMapFabs()
+        updateMapJoystick()
         updateStopTxButton()
     }
 
@@ -359,30 +363,31 @@ class MainActivity : AppCompatActivity() {
     private fun handleTxSourceSwitch(to: Mode) {
         when (to) {
             Mode.LIVE -> {
-                // Joystick takes over from the current sim position.
+                // The LLH joystick takes over from the current sim position. The
+                // motion loop may already be running (handed over from a map static
+                // hold), so just seed the fields and enable the LLH controls.
                 if (routePlaying) stopPlayback()            // end map playback (keeps TX)
-                if (!motionRunning) {
-                    binding.liveLatInput.setText(fmt(liveLat, 6))
-                    binding.liveLonInput.setText(fmt(liveLon, 6))
-                    binding.liveHgtInput.setText(fmt(liveHgt, 1))
-                    binding.joystick.reset(); velE = 0.0; velN = 0.0
-                    setLiveControlsEnabled(true)
-                    startMotionLoop()
-                    appendStatus("TX source → LLH (joystick).")
-                }
+                binding.liveLatInput.setText(fmt(liveLat, 6))
+                binding.liveLonInput.setText(fmt(liveLon, 6))
+                binding.liveHgtInput.setText(fmt(liveHgt, 1))
+                binding.joystick.reset(); velE = 0.0; velN = 0.0
+                setLiveControlsEnabled(true)
+                if (!motionRunning) startMotionLoop()
+                appendStatus("TX source → LLH (joystick).")
             }
             Mode.MAP -> {
-                // Leaving the joystick loop: hold position statically; a route can
-                // then be played from here. If a playback is already running (came
-                // in via Settings), leave it as the source.
-                if (motionRunning) {
-                    stopMotionLoop()
-                    setLiveControlsEnabled(false)
+                // Hand the FIFO to the map's static hold (driveable with the on-map
+                // joystick). If a playback is already running (came in via Settings),
+                // leave it as the source instead.
+                if (!routePlaying) {
+                    binding.mapJoystick.reset(); velE = 0.0; velN = 0.0
+                    setLiveControlsEnabled(false)   // disable the LLH panel's controls
+                    if (!motionRunning) startMotionLoop()   // keep driving via the map joystick
                     updateCursor(GeoPt(liveLat, liveLon, liveHgt))
                     setMapEditEnabled(true)
                     redrawMap()
                     updateMapButtons()
-                    appendStatus("TX source → Map (static hold — press Play to run a route).")
+                    appendStatus("TX source → Map (joystick / static hold — press Play to run a route).")
                 }
             }
             Mode.SETTINGS -> { /* neither source changes while adjusting settings */ }
@@ -576,6 +581,7 @@ class MainActivity : AppCompatActivity() {
         direction = 1
         loopsDone = 0
         stopRemainingMs = 0.0
+        routeSpeed = 0.0
         removeCursor()
         setMapEditEnabled(true)
         updateMapButtons()
@@ -632,6 +638,8 @@ class MainActivity : AppCompatActivity() {
                 add("gps-sdr-sim")
                 add("-e"); add(ephem.absolutePath)
                 add("-b"); add("8")
+                add("-s"); add("4000000")   // 4 MHz IQ, matching the HackRF TX rate
+                add("-p"); add("128")       // fixed gain (disable path loss)
                 if (retimeNow) { add("-T"); add("now") }
                 add("-S"); add("-H")
                 add("-o"); add(dummyOut.absolutePath)
@@ -652,6 +660,7 @@ class MainActivity : AppCompatActivity() {
         Log.e("MainActivity", "TX startup failed", t)
         appendStatus("TX failed: ${t.message}")
         txService?.stopTx()       // stop the stream but stay connected
+        stopMotionLoop()
         setLiveControlsEnabled(false)
         stopRouteLoop()
         routePlaying = false; routePaused = false
@@ -679,17 +688,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stepMotion(dt: Double) {
-        val maxSpeed = binding.speedSeek.progress.toDouble() / 3.6 // km/h -> m/s
-        val jx = binding.joystick.xNorm.toDouble()
-        val jy = binding.joystick.yNorm.toDouble()
+        // Drive from whichever joystick / speed belongs to the current mode: the
+        // LLH panel's in LIVE mode, the on-map joystick's in Map mode. Both feed
+        // the same velocity integrator and the shared LLH FIFO.
+        val js = activeJoystick()
+        val maxSpeed = activeMaxSpeedKmh().toDouble() / 3.6 // km/h -> m/s
+        val jx = js.xNorm.toDouble()
+        val jy = js.yNorm.toDouble()
         val targetVE = jx * maxSpeed
         val targetVN = jy * maxSpeed
 
-        val curSpeed = hypot(velE, velN)
-        val targetSpeed = hypot(targetVE, targetVN)
-        val rampTime = if (targetSpeed >= curSpeed) RAMP_UP_S else RAMP_DOWN_S
-        val accel = if (maxSpeed > 0.0) maxSpeed / rampTime else FALLBACK_ACCEL
-        val maxDelta = accel * dt
+        // Trapezoidal ramp: approach the target velocity at the configured
+        // acceleration (used for both speeding up and slowing down).
+        val maxDelta = activeAccel() * dt
 
         val dvE = targetVE - velE
         val dvN = targetVN - velN
@@ -704,13 +715,16 @@ class MainActivity : AppCompatActivity() {
             liveLon += velE * dt / (METERS_PER_DEG_LAT * cosLat)
             if (liveLon > 180.0) liveLon -= 360.0
             if (liveLon < -180.0) liveLon += 360.0
-            // Track height from its field (unless the user is editing it), and
-            // reflect the moving position back into the lat/lon fields — but not
-            // while a field has focus, so a manual override isn't clobbered.
-            if (!binding.liveHgtInput.hasFocus())
-                binding.liveHgtInput.text?.toString()?.trim()?.toDoubleOrNull()?.let { liveHgt = it }
-            if (!binding.liveLatInput.hasFocus()) binding.liveLatInput.setText(fmt(liveLat, 6))
-            if (!binding.liveLonInput.hasFocus()) binding.liveLonInput.setText(fmt(liveLon, 6))
+            // In LLH mode, track height from its field (unless being edited) and
+            // reflect the moving position back into the lat/lon fields. In Map mode
+            // those fields belong to the hidden LLH panel, so leave height alone and
+            // hold the seeded/ground altitude instead.
+            if (mode == Mode.LIVE) {
+                if (!binding.liveHgtInput.hasFocus())
+                    binding.liveHgtInput.text?.toString()?.trim()?.toDoubleOrNull()?.let { liveHgt = it }
+                if (!binding.liveLatInput.hasFocus()) binding.liveLatInput.setText(fmt(liveLat, 6))
+                if (!binding.liveLonInput.hasFocus()) binding.liveLonInput.setText(fmt(liveLon, 6))
+            }
             NativeGen.pushPosition(liveLat, liveLon, liveHgt)
         }
         binding.liveReadout.text =
@@ -721,6 +735,43 @@ class MainActivity : AppCompatActivity() {
         updateCursor(GeoPt(liveLat, liveLon, liveHgt))
     }
 
+    /** The joystick that drives the sim position in the current mode. */
+    private fun activeJoystick(): JoystickView =
+        if (mode == Mode.MAP) binding.mapJoystick else binding.joystick
+
+    /** The move-speed setting (km/h) for the current mode. */
+    private fun activeMaxSpeedKmh(): Int =
+        if (mode == Mode.MAP) binding.mapSpeedSeek.progress else binding.speedSeek.progress
+
+    private fun liveAccel(): Double =
+        (binding.liveAccelInput.text?.toString()?.trim()?.toDoubleOrNull() ?: DEFAULT_ACCEL)
+            .coerceIn(0.1, 100.0)
+
+    private fun mapAccel(): Double =
+        (binding.mapAccelInput.text?.toString()?.trim()?.toDoubleOrNull() ?: DEFAULT_ACCEL)
+            .coerceIn(0.1, 100.0)
+
+    /** Acceleration (m/s²) driving the ramp in the current mode. */
+    private fun activeAccel(): Double = if (mode == Mode.MAP) mapAccel() else liveAccel()
+
+    /**
+     * Show the on-map joystick whenever the map is transmitting, and let it drive
+     * only while no route playback owns the FIFO. Driving reuses the shared motion
+     * loop (stepMotion reads [activeJoystick]).
+     */
+    private fun updateMapJoystick() {
+        // Always visible in Map mode (like the LLH joystick in its tab), but it can
+        // only drive the sim position while transmitting a static hold: the route
+        // loop owns the FIFO during playback, and there's nothing to drive while
+        // idle. When it can't drive it renders dimmed and passes touches through to
+        // the map (JoystickView.onTouchEvent returns false while disabled).
+        binding.mapJoystick.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
+        val drive = mode == Mode.MAP && txRunning && !routePlaying
+        binding.mapJoystick.isEnabled = drive
+        if (!drive) binding.mapJoystick.reset()
+        if (drive && !motionRunning) startMotionLoop()
+    }
+
     private fun setLiveControlsEnabled(enabled: Boolean) {
         binding.joystick.isEnabled = enabled
         binding.speedSeek.isEnabled = enabled
@@ -728,10 +779,12 @@ class MainActivity : AppCompatActivity() {
         binding.presetRun.isEnabled = enabled
         binding.presetMoto.isEnabled = enabled
         binding.presetCar.isEnabled = enabled
+        binding.liveAccelInput.isEnabled = enabled
         // setPosButton stays enabled throughout — it's the Start-TX button while
-        // idle and the position-override button while transmitting.
+        // idle and the position-override button while transmitting. The motion loop
+        // is started/stopped by the caller, not here (Map mode keeps it running for
+        // the on-map joystick even though these LLH controls are disabled).
         if (!enabled) {
-            stopMotionLoop()
             binding.joystick.reset()
             binding.liveReadout.text = "idle"
         }
@@ -1492,7 +1545,7 @@ class MainActivity : AppCompatActivity() {
             !txRunning -> {
                 // Idle: start the HackRF TX and route playback together.
                 val seed = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
-                direction = 1; loopsDone = 0; stopRemainingMs = 0.0
+                direction = 1; loopsDone = 0; stopRemainingMs = 0.0; routeSpeed = 0.0
                 stopCheckpoints = computeCheckpoints(pts)
                 beginLiveTx(seed.lat, seed.lon, seed.alt ?: mapAlt()) {
                     setMapEditEnabled(false)
@@ -1508,10 +1561,11 @@ class MainActivity : AppCompatActivity() {
                 // Already transmitting (static): begin route playback on the live
                 // TX without restarting the generator; teleport to the route start.
                 val seed = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
-                direction = 1; loopsDone = 0; stopRemainingMs = 0.0
+                direction = 1; loopsDone = 0; stopRemainingMs = 0.0; routeSpeed = 0.0
                 stopCheckpoints = computeCheckpoints(pts)
                 liveLat = seed.lat; liveLon = seed.lon; liveHgt = seed.alt ?: mapAlt()
                 velE = 0.0; velN = 0.0
+                stopMotionLoop()        // route loop takes over the FIFO from the joystick
                 NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
                 setMapEditEnabled(false)
                 routePlaying = true; routePaused = false
@@ -1547,7 +1601,8 @@ class MainActivity : AppCompatActivity() {
         if (!routePlaying) return
         stopRouteLoop()
         routePlaying = false; routePaused = false
-        routeProgress = 0.0; direction = 1; loopsDone = 0; stopRemainingMs = 0.0
+        routeProgress = 0.0; direction = 1; loopsDone = 0; stopRemainingMs = 0.0; routeSpeed = 0.0
+        velE = 0.0; velN = 0.0
         setMapEditEnabled(true)
         redrawMap()                 // rebuild markers as draggable again
         updateMapButtons()
@@ -1586,14 +1641,36 @@ class MainActivity : AppCompatActivity() {
         // checkpoint-arming guard below from ever firing another stop).
         if (stopRemainingMs > 0.0) {
             stopRemainingMs = (stopRemainingMs - dt * 1000.0).coerceAtLeast(0.0)
+            routeSpeed = 0.0
             pushAndShow(pts, total, speedKmh, "Stopped ${(stopRemainingMs / 1000).toInt() + 1}s")
             return
         }
 
-        // Speed jitter: ± a fraction of the base speed each tick.
+        // Speed jitter: ± a fraction of the base cruise speed each tick.
         val jitter = dynJitter()
         val jf = if (jitter > 0.0) 1.0 + (Random.nextDouble() * 2 - 1) * jitter else 1.0
-        val speed = speedKmh.toDouble() / 3.6 * jf
+        val cruise = speedKmh.toDouble() / 3.6 * jf         // target cruise speed (m/s)
+
+        // Trapezoidal velocity profile: accelerate from rest, cruise, then
+        // decelerate so the sim arrives at rest wherever it must stop (route end,
+        // a bounce turnaround, or the final lap's end). A loop's wrap is continuous
+        // (no stop), so distToStop is null there and it keeps cruising.
+        val accel = mapAccel()
+        val loopN = loopLimit()
+        val distToStop: Double? = when (repeatMode) {
+            RepeatMode.OFF    -> total - routeProgress
+            RepeatMode.BOUNCE -> if (direction > 0) total - routeProgress else routeProgress
+            RepeatMode.LOOP   ->
+                if (loopN > 0 && loopsDone >= loopN - 1) total - routeProgress else null
+        }
+        // Brake cap: the fastest speed from which we can still stop within
+        // distToStop at this deceleration (v ≤ √(2·a·d)).
+        val vCap = distToStop?.let { sqrt(2.0 * accel * max(0.0, it)) } ?: Double.MAX_VALUE
+        val vTarget = min(cruise, vCap)
+        routeSpeed =
+            if (routeSpeed < vTarget) min(vTarget, routeSpeed + accel * dt)
+            else max(vTarget, routeSpeed - accel * dt)
+        val speed = routeSpeed
 
         val stopProb = dynStopProb()
         val prev = routeProgress
@@ -1602,17 +1679,17 @@ class MainActivity : AppCompatActivity() {
         var done = false
         if (routeProgress >= total) {
             when (repeatMode) {
-                RepeatMode.OFF    -> { routeProgress = total; done = true }
-                RepeatMode.BOUNCE -> { routeProgress = total; direction = -1; rollStop() }
+                RepeatMode.OFF    -> { routeProgress = total; routeSpeed = 0.0; done = true }
+                RepeatMode.BOUNCE -> { routeProgress = total; direction = -1; routeSpeed = 0.0; rollStop() }
                 RepeatMode.LOOP   -> {
                     routeProgress -= total; loopsDone++
-                    if (reachedLoopLimit()) { routeProgress = total; done = true } else rollStop()
+                    if (reachedLoopLimit()) { routeProgress = total; routeSpeed = 0.0; done = true } else rollStop()
                 }
             }
         } else if (routeProgress <= 0.0) {
             routeProgress = 0.0
             if (repeatMode == RepeatMode.BOUNCE && direction == -1) {
-                loopsDone++; direction = 1
+                loopsDone++; direction = 1; routeSpeed = 0.0
                 if (reachedLoopLimit()) done = true else rollStop()
             }
         }
@@ -1623,6 +1700,7 @@ class MainActivity : AppCompatActivity() {
                 val crossed = (prev < cp && routeProgress >= cp) || (prev > cp && routeProgress <= cp)
                 if (crossed && Random.nextDouble() < stopProb) {
                     routeProgress = cp
+                    routeSpeed = 0.0
                     stopRemainingMs = randomStopMs()
                     break
                 }
@@ -1651,7 +1729,8 @@ class MainActivity : AppCompatActivity() {
         }
         val loops = if (repeatMode != RepeatMode.OFF) " · lap $loopsDone" else ""
         val head = holdNote ?: "Playing$modeTag"
-        val kmh = if (holdNote != null) "0" else "$speedKmh"
+        // Show the live (ramped) speed, not the setpoint, so accel/decel is visible.
+        val kmh = if (holdNote != null) "0" else fmt(routeSpeed * 3.6, 0)
         setRouteStatus(
             "$head · $pct% · ${fmtDist(routeProgress)}/${fmtDist(total)} · " +
                 "$kmh km/h · ${fmt(p.lat, 5)}, ${fmt(p.lon, 5)} · ${liveHgt.toInt()} m$loops"
@@ -1800,6 +1879,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnPlayPause.isEnabled = hasRoute || playing
         binding.btnStopFab.isEnabled = active
         updateStopTxButton()
+        updateMapJoystick()
     }
 
     private fun setMapEditEnabled(enabled: Boolean) {
@@ -2015,9 +2095,7 @@ class MainActivity : AppCompatActivity() {
         private const val TICK_MS = 100L
         private const val TICK_S = TICK_MS / 1000.0
         private const val METERS_PER_DEG_LAT = 111_320.0
-        private const val RAMP_UP_S = 1.2
-        private const val RAMP_DOWN_S = 0.8
-        private const val FALLBACK_ACCEL = 5.0
+        private const val DEFAULT_ACCEL = 3.0   // m/s² fallback for the accel fields
         private const val ROUTE_DEBOUNCE_MS = 700L
         private const val MAX_TRKPT_MARKERS = 250
         private const val LOCATION_BLUE = 0xFF1E88E5.toInt()  // real phone location
