@@ -518,7 +518,7 @@
             android:layout_width="190dp"
             android:layout_height="190dp"
             android:layout_gravity="bottom|center_horizontal"
-            android:layout_marginBottom="24dp"
+            android:layout_marginBottom="72dp"
             android:enabled="false"
             android:visibility="gone" />
     </FrameLayout>
