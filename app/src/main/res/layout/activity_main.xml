@@ -459,6 +459,18 @@
                 android:contentDescription="Delete all waypoints" />
 
             <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/btn_center_sim"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="-10dp"
+                android:visibility="gone"
+                android:src="@android:drawable/ic_menu_mylocation"
+                app:backgroundTint="#FF9800"
+                app:tint="@android:color/white"
+                app:useCompatPadding="true"
+                android:contentDescription="Center on simulated position" />
+
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
                 android:id="@+id/btn_my_location"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

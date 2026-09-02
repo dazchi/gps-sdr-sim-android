@@ -117,6 +117,9 @@ class MainActivity : AppCompatActivity() {
     private var routeJob: Job? = null
     private var myLocationOverlay: MyLocationNewOverlay? = null
     private var activeToast: android.widget.Toast? = null   // reused so clicks don't stack toasts
+    // Orange "center on sim" FAB cycle: 0 = none, 1 = centered once, 2 = follow
+    // (map keeps re-centering on the sim position as it moves).
+    private var centerSimMode = 0
     private val logTimeFmt = java.text.SimpleDateFormat("yyyy/MM/dd HH:mm:ss", java.util.Locale.US)
     private var myLocationEnabled = false
     private var selectedWaypoint = -1                  // index into waypoints, -1 = none
@@ -326,6 +329,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectMode(newMode: Mode) {
+        val prev = mode
         mode = newMode
         // Content: full-screen map for Map mode; the Raw/Live/Settings forms
         // (in the scroll) otherwise.
@@ -340,8 +344,49 @@ class MainActivity : AppCompatActivity() {
         binding.fabColumn.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
         binding.playColumn.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
         binding.txButton.visibility = View.GONE
+        // Mid-TX mode change: hand the shared LLH FIFO over to the new mode's
+        // position source (joystick loop ↔ route/static) without touching TX.
+        if (txRunning && prev != newMode) handleTxSourceSwitch(newMode)
         updateMapFabs()
         updateStopTxButton()
+    }
+
+    /**
+     * Swap which loop feeds the LLH FIFO when the user changes mode while
+     * transmitting. Keyed off the loop currently running (not [prev]) so
+     * round-trips through Settings don't disturb an ongoing playback.
+     */
+    private fun handleTxSourceSwitch(to: Mode) {
+        when (to) {
+            Mode.LIVE -> {
+                // Joystick takes over from the current sim position.
+                if (routePlaying) stopPlayback()            // end map playback (keeps TX)
+                if (!motionRunning) {
+                    binding.liveLatInput.setText(fmt(liveLat, 6))
+                    binding.liveLonInput.setText(fmt(liveLon, 6))
+                    binding.liveHgtInput.setText(fmt(liveHgt, 1))
+                    binding.joystick.reset(); velE = 0.0; velN = 0.0
+                    setLiveControlsEnabled(true)
+                    startMotionLoop()
+                    appendStatus("TX source → LLH (joystick).")
+                }
+            }
+            Mode.MAP -> {
+                // Leaving the joystick loop: hold position statically; a route can
+                // then be played from here. If a playback is already running (came
+                // in via Settings), leave it as the source.
+                if (motionRunning) {
+                    stopMotionLoop()
+                    setLiveControlsEnabled(false)
+                    updateCursor(GeoPt(liveLat, liveLon, liveHgt))
+                    setMapEditEnabled(true)
+                    redrawMap()
+                    updateMapButtons()
+                    appendStatus("TX source → Map (static hold — press Play to run a route).")
+                }
+            }
+            Mode.SETTINGS -> { /* neither source changes while adjusting settings */ }
+        }
     }
 
     // ---- HackRF connect / disconnect --------------------------------------
@@ -671,6 +716,9 @@ class MainActivity : AppCompatActivity() {
         binding.liveReadout.text =
             "TX: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}, ${fmt(liveHgt, 1)} m\n" +
                 "v = ${fmt(speed * 3.6, 1)} km/h"
+        // Keep the orange map cursor on the live joystick-driven position (even
+        // when stationary) so it's correct whenever the map is shown.
+        updateCursor(GeoPt(liveLat, liveLon, liveHgt))
     }
 
     private fun setLiveControlsEnabled(enabled: Boolean) {
@@ -693,6 +741,7 @@ class MainActivity : AppCompatActivity() {
     //  Map: setup, waypoints, routing, GPX
     // ======================================================================
 
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
     private fun setupMap() {
         val map = binding.map
         // OSM's own tile server blocks unlisted apps, and Carto watermarks keyless
@@ -771,6 +820,14 @@ class MainActivity : AppCompatActivity() {
             it.setPersonAnchor(0.5f, 0.5f)
             it.setDirectionAnchor(0.5f, 0.5f)
             map.overlays.add(it)
+        }
+
+        // In follow mode, swallow single-finger drags so the user can't pan the
+        // map away from the sim dot; multi-touch (pinch-zoom) and taps pass through.
+        map.setOnTouchListener { _, ev ->
+            centerSimMode == 2 &&
+                ev.pointerCount == 1 &&
+                ev.actionMasked == android.view.MotionEvent.ACTION_MOVE
         }
 
         redrawMap()
@@ -996,6 +1053,7 @@ class MainActivity : AppCompatActivity() {
         binding.mapPresetCar.setOnClickListener  { binding.mapSpeedSeek.progress = 100 }
 
         binding.btnMyLocation.setOnClickListener { onMyLocationClicked() }
+        binding.btnCenterSim.setOnClickListener { onCenterSimClicked() }
         binding.btnDeleteWp.setOnClickListener { deleteSelectedWaypoint() }
         binding.btnDeleteAll.setOnClickListener { clearWaypoints() }
 
@@ -1079,6 +1137,7 @@ class MainActivity : AppCompatActivity() {
             if (editable && selectedWaypoint in waypoints.indices) View.VISIBLE else View.GONE
         binding.btnDeleteAll.visibility =
             if (editable && waypoints.isNotEmpty()) View.VISIBLE else View.GONE
+        updateCenterSimFab()
     }
 
     private fun updateWpCount() {
@@ -1652,6 +1711,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateCursor(p: GeoPt) {
         val map = binding.map
+        val fresh = cursorMarker == null
         val c = cursorMarker ?: Marker(map).apply {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
             icon = BitmapDrawable(resources, makeDot(CURSOR_ORANGE)) // symmetric = no offset
@@ -1661,13 +1721,65 @@ class MainActivity : AppCompatActivity() {
             map.overlays.add(this)
         }
         c.position = GeoPoint(p.lat, p.lon)
+        // Follow mode: keep the map locked on the sim position as it moves.
+        if (centerSimMode == 2) applyFollowLock()
         map.invalidate()
+        if (fresh) updateCenterSimFab()   // the "center on sim" FAB appears with the dot
+    }
+
+    /**
+     * Follow lock: clamp the map's scrollable area to a zero-size box at the sim
+     * dot. This pins the dot to the centre through zoom gestures and blocks the
+     * user from panning away; cleared when not following.
+     */
+    private fun applyFollowLock() {
+        val map = binding.map
+        val c = cursorMarker
+        if (centerSimMode == 2 && c != null) {
+            val lat = c.position.latitude; val lon = c.position.longitude
+            map.setScrollableAreaLimitDouble(org.osmdroid.util.BoundingBox(lat, lon, lat, lon))
+            map.controller.setCenter(c.position)
+        } else {
+            map.setScrollableAreaLimitDouble(null)
+        }
     }
 
     private fun removeCursor() {
         cursorMarker?.let { binding.map.overlays.remove(it) }
         cursorMarker = null
         binding.map.invalidate()
+        updateCenterSimFab()
+    }
+
+    /**
+     * Orange FAB press cycles: center-once → follow → center-once … Both actions
+     * recentre immediately; follow additionally keeps the map centred as the sim
+     * position moves (see updateCursor).
+     */
+    private fun onCenterSimClicked() {
+        val c = cursorMarker ?: return
+        centerSimMode = if (centerSimMode == 1) 2 else 1
+        if (centerSimMode == 2) {
+            applyFollowLock()                                  // lock to centre + block panning
+        } else {
+            binding.map.setScrollableAreaLimitDouble(null)     // release the lock
+            binding.map.controller.animateTo(c.position)       // one-time recentre
+        }
+        updateCenterSimFab()
+        appendStatus(if (centerSimMode == 2) "following simulated position" else "centered on simulated position")
+    }
+
+    /**
+     * The orange "center on simulated position" FAB tracks the cursor's presence;
+     * it deepens (locked look) while following, and resets when the dot is gone.
+     */
+    private fun updateCenterSimFab() {
+        if (cursorMarker == null) centerSimMode = 0
+        if (centerSimMode != 2) binding.map.setScrollableAreaLimitDouble(null)  // release stale lock
+        binding.btnCenterSim.visibility =
+            if (mode == Mode.MAP && cursorMarker != null) View.VISIBLE else View.GONE
+        val tint = if (centerSimMode == 2) 0xFFE65100.toInt() else 0xFFFF9800.toInt()
+        binding.btnCenterSim.backgroundTintList = android.content.res.ColorStateList.valueOf(tint)
     }
 
     private fun updateMapButtons() {
@@ -1771,11 +1883,12 @@ class MainActivity : AppCompatActivity() {
         if (m < 1000.0) "${m.toInt()} m" else "%.2f km".format(m / 1000.0)
 
     private fun setTabsEnabled(enabled: Boolean) {
-        // While a transmission is in flight, lock the TX modes so the generation
-        // can't be switched — but keep the active mode and Settings reachable so
-        // amp / VGA gain can still be adjusted live.
-        binding.modeLive.isEnabled = enabled || mode == Mode.LIVE
-        binding.modeMap.isEnabled = enabled || mode == Mode.MAP
+        // Modes stay switchable even mid-TX: LLH and Map both feed the same LLH
+        // FIFO, so switching only swaps the position source, never restarts the
+        // generator (see selectMode → handleTxSourceSwitch). Kept as a no-op hook
+        // in case a mode ever needs locking again.
+        binding.modeLive.isEnabled = true
+        binding.modeMap.isEnabled = true
         binding.modeSettings.isEnabled = true
     }
 
