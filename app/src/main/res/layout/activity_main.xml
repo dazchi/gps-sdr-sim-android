@@ -107,8 +107,8 @@
                         style="?attr/materialButtonOutlinedStyle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:enabled="false"
-                        android:text="Set position (override)" />
+                        android:enabled="true"
+                        android:text="Start TX" />
 
                     <TextView
                         android:id="@+id/speed_label"
@@ -267,6 +267,44 @@
                         android:layout_height="wrap_content"
                         android:max="47"
                         android:progress="0" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="28dp"
+                        android:text="EPHEMERIS"
+                        android:textColor="?android:attr/textColorPrimary"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/ephem_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="Using bundled brdc0010.22n" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/ephem_choose_button"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Choose brdc file…" />
+
+                        <Button
+                            android:id="@+id/ephem_reset_button"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_gravity="center_vertical"
+                            android:layout_marginStart="8dp"
+                            android:text="Reset" />
+                    </LinearLayout>
 
                     <TextView
                         android:layout_width="match_parent"
@@ -514,6 +552,18 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
                 android:text="Disconnected" />
+
+            <Button
+                android:id="@+id/btn_stop_tx"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:maxLines="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:enabled="false"
+                android:backgroundTint="@color/stop_tx"
+                android:text="⏹ Stop TX" />
 
             <!-- ==================== MAP options ==================== -->
             <LinearLayout

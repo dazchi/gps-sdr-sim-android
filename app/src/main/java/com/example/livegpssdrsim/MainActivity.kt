@@ -15,7 +15,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.method.ScrollingMovementMethod
 import android.util.Log
 import android.view.View
 import android.widget.FrameLayout
@@ -117,6 +116,8 @@ class MainActivity : AppCompatActivity() {
     private var cursorMarker: Marker? = null
     private var routeJob: Job? = null
     private var myLocationOverlay: MyLocationNewOverlay? = null
+    private var activeToast: android.widget.Toast? = null   // reused so clicks don't stack toasts
+    private val logTimeFmt = java.text.SimpleDateFormat("yyyy/MM/dd HH:mm:ss", java.util.Locale.US)
     private var myLocationEnabled = false
     private var selectedWaypoint = -1                  // index into waypoints, -1 = none
 
@@ -164,6 +165,11 @@ class MainActivity : AppCompatActivity() {
     private val createGpx = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/gpx+xml")
     ) { uri -> uri?.let { exportGpx(it) } }
+
+    // SAF picker for a user-supplied broadcast ephemeris (RINEX brdc) file.
+    private val openBrdc = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { importBrdc(it) }
+    }
 
     private val locationPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -230,8 +236,8 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
-        binding.statusText.movementMethod = ScrollingMovementMethod()
-        binding.statusTextSettings.movementMethod = ScrollingMovementMethod()
+        setupScrollableLog(binding.statusText)
+        setupScrollableLog(binding.statusTextSettings)
         appendStatus(stringFromJNI())
         binding.txButton.setOnClickListener { onTxClicked() }
 
@@ -255,6 +261,25 @@ class MainActivity : AppCompatActivity() {
         setupMap()
         setupMapControls()
         setupSettingsControls()
+        applyDrawerWidth()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyDrawerWidth()   // full-width drawer in portrait, fixed in landscape
+    }
+
+    /**
+     * Drawer fills the screen in portrait (MATCH_PARENT, which DrawerLayout leaves
+     * a 64dp swipe-to-dismiss margin on); a fixed 320dp in landscape.
+     */
+    private fun applyDrawerWidth() {
+        val portrait =
+            resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
+        binding.drawerScroll.updateLayoutParams {
+            width = if (portrait) android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            else (320 * resources.displayMetrics.density).toInt()
+        }
     }
 
     override fun onResume() {
@@ -308,13 +333,15 @@ class MainActivity : AppCompatActivity() {
         binding.contentScroll.visibility = if (mode == Mode.MAP) View.GONE else View.VISIBLE
         binding.panelLive.visibility     = if (mode == Mode.LIVE)     View.VISIBLE else View.GONE
         binding.panelSettings.visibility = if (mode == Mode.SETTINGS) View.VISIBLE else View.GONE
-        // Drawer: map options only in Map mode; the Start-TX button applies to
-        // the LLH tab (Map uses Play/Pause/Stop; Settings has no TX action).
+        // Drawer: map options only in Map mode. The LLH tab drives TX from its own
+        // Start-TX / Set-position button, so the shared drawer Start-TX button is
+        // never shown (Map uses Play/Pause/Stop; Settings has no TX action).
         binding.panelMap.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
         binding.fabColumn.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
         binding.playColumn.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
-        binding.txButton.visibility = if (mode == Mode.LIVE) View.VISIBLE else View.GONE
+        binding.txButton.visibility = View.GONE
         updateMapFabs()
+        updateStopTxButton()
     }
 
     // ---- HackRF connect / disconnect --------------------------------------
@@ -323,7 +350,23 @@ class MainActivity : AppCompatActivity() {
         binding.btnConnect.setOnClickListener {
             if (connected) onDisconnect() else onConnect()
         }
+        binding.btnStopTx.setOnClickListener { onStopTxClicked() }
         updateConnUi()
+    }
+
+    /**
+     * Drawer Stop-TX button, available in every mode. If a route playback is
+     * running/paused it stops just the playback (leaving the HackRF transmitting a
+     * static hold, per the Map stop behaviour); otherwise it stops transmitting
+     * entirely — including a static TX started by long-pressing the map.
+     */
+    private fun onStopTxClicked() {
+        if (routePlaying) stopPlayback() else stopEverything()
+    }
+
+    /** Enable Stop-TX whenever the HackRF is transmitting (playback or static). */
+    private fun updateStopTxButton() {
+        binding.btnStopTx.isEnabled = txRunning
     }
 
     /** Called when the bound service's connection/TX state changes. */
@@ -391,7 +434,11 @@ class MainActivity : AppCompatActivity() {
         }
         // Start TX / Play need a connected device.
         binding.txButton.isEnabled = connected
+        // LLH button doubles as Start-TX (idle) / Set-position override (running).
+        binding.setPosButton.text = if (txRunning) "Set position (override)" else "Start TX"
         updateMapButtons()
+        updateStopTxButton()
+        updateEphemStatus()   // keep the brdc buttons locked while transmitting
     }
 
     private fun setupRfControls() {
@@ -426,6 +473,15 @@ class MainActivity : AppCompatActivity() {
                 appendStatus("vga gain: $vgaGain dB")
             }
         })
+
+        binding.ephemChooseButton.setOnClickListener {
+            if (txRunning) return@setOnClickListener   // can't swap ephemeris mid-TX
+            // Accept any file — brdc/RINEX files use many extensions (.22n, .rnx,
+            // .yyn, …) and providers rarely report a useful MIME type.
+            openBrdc.launch(arrayOf("*/*"))
+        }
+        binding.ephemResetButton.setOnClickListener { resetBrdc() }
+        updateEphemStatus()
     }
 
     private fun setupLiveControls() {
@@ -441,7 +497,11 @@ class MainActivity : AppCompatActivity() {
         binding.presetRun.setOnClickListener  { binding.speedSeek.progress = 9 }
         binding.presetMoto.setOnClickListener { binding.speedSeek.progress = 40 }
         binding.presetCar.setOnClickListener  { binding.speedSeek.progress = 100 }
-        binding.setPosButton.setOnClickListener { onSetPosition() }
+        // Doubles as the Start-TX button: starts live TX when idle, overrides the
+        // position once transmitting. Its label follows the TX state (updateConnUi).
+        binding.setPosButton.setOnClickListener {
+            if (txRunning) onSetPosition() else startLiveTx()
+        }
     }
 
     // ======================================================================
@@ -509,7 +569,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun beginLiveTx(seedLat: Double, seedLon: Double, seedHgt: Double, onRunning: () -> Unit) {
         val svc = txService?.takeIf { it.connected } ?: run {
-            appendStatus("connect the HackRF first (Controls → Connect)"); return
+            appendStatus("connect the HackRF first (Controls → Connect)")
+            showToast("Connect the HackRF first (Controls → Connect)")
+            return
         }
         liveLat = seedLat; liveLon = seedLon; liveHgt = seedHgt
         velE = 0.0; velN = 0.0
@@ -518,8 +580,8 @@ class MainActivity : AppCompatActivity() {
         setTabsEnabled(false)
         appendStatus("starting generator + TX at $seedLat,$seedLon,$seedHgt...")
         scope.launch {
-            val ephem = withContext(Dispatchers.IO) { copyAssetToFiles("brdc0010.22n") }
-            appendStatus("ephemeris: ${ephem.absolutePath}")
+            val ephem = withContext(Dispatchers.IO) { resolveEphemerisFile() }
+            appendStatus("ephemeris: ${ephem.name}")
             val dummyOut = File(filesDir, "unused.bin")
             val args = buildList {
                 add("gps-sdr-sim")
@@ -618,9 +680,8 @@ class MainActivity : AppCompatActivity() {
         binding.presetRun.isEnabled = enabled
         binding.presetMoto.isEnabled = enabled
         binding.presetCar.isEnabled = enabled
-        // The lat/lon/height fields stay editable throughout (they seed the run,
-        // then override it via "Set position"), which is only actionable while TX.
-        binding.setPosButton.isEnabled = enabled
+        // setPosButton stays enabled throughout — it's the Start-TX button while
+        // idle and the position-override button while transmitting.
         if (!enabled) {
             stopMotionLoop()
             binding.joystick.reset()
@@ -1000,6 +1061,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun clearWaypoints() {
         if (routeLocked) return
+        // Cancel any pending/in-flight route fetch so a late result can't repaint
+        // a route after the waypoints are gone.
+        mapHandler.removeCallbacks(routeFetchRunnable)
+        mapHandler.removeCallbacks(ghRetryRunnable)
+        ghRetrySecs = 0
+        routeJob?.cancel()
         waypoints.clear(); routeGeo = emptyList(); selectedWaypoint = -1
         updateWpCount(); redrawMap()
         setRouteStatus("Tap the map to add waypoints")
@@ -1272,16 +1339,22 @@ class MainActivity : AppCompatActivity() {
         // closing leg (last → first) along roads.
         val loop = repeatMode == RepeatMode.LOOP && waypoints.size >= 2
         val wps = if (loop) waypoints.toList() + waypoints.first() else waypoints.toList()
+        // Snapshot the waypoints this request was built from; if they change or get
+        // cleared while the network call is in flight, the result is stale and must
+        // be discarded (otherwise a deleted route can reappear on the map).
+        val requested = waypoints.toList()
         setRouteStatus("Calculating route…")
         routeJob = scope.launch {
             try {
                 val geo = GraphHopperRouter.route(wps, profile, key)
+                if (waypoints != requested) return@launch   // waypoints changed — stale result
                 routeGeo = geo
                 redrawMap()
                 updateRouteInfo()
                 setRouteStatus("Road route ($profile) · ${fmtDist(RouteGeometry.totalDistance(activePts()))}")
                 maybeEnrichElevation()
             } catch (e: Exception) {
+                if (waypoints != requested) return@launch   // stale (cleared/changed) — ignore
                 routeGeo = emptyList()
                 redrawMap()
                 val msg = e.message?.lowercase().orEmpty()
@@ -1614,6 +1687,7 @@ class MainActivity : AppCompatActivity() {
         )
         binding.btnPlayPause.isEnabled = hasRoute || playing
         binding.btnStopFab.isEnabled = active
+        updateStopTxButton()
     }
 
     private fun setMapEditEnabled(enabled: Boolean) {
@@ -1705,19 +1779,62 @@ class MainActivity : AppCompatActivity() {
         binding.modeSettings.isEnabled = true
     }
 
+    /**
+     * Let a fixed-height log TextView scroll on its own and be selected/copied
+     * (so the user can grab log text to report errors). textIsSelectable installs
+     * a movement method that both scrolls and selects; on touch we ask the
+     * enclosing scroll view to stop intercepting so the drag scrolls the log
+     * rather than the whole panel.
+     */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun setupScrollableLog(tv: android.widget.TextView) {
+        tv.setTextIsSelectable(true)
+        tv.setOnTouchListener { v, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_MOVE ->
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                    v.parent?.requestDisallowInterceptTouchEvent(false)
+            }
+            false   // let the movement method handle the actual scrolling
+        }
+    }
+
+    /** True when the log is scrolled to (or near) the bottom. */
+    private fun logAtBottom(tv: android.widget.TextView): Boolean {
+        val layout = tv.layout ?: return true
+        val bottom = layout.getLineTop(tv.lineCount) - tv.height
+        return tv.scrollY >= bottom - tv.lineHeight   // within one line of the end
+    }
+
     private fun appendStatus(line: String) {
+        val stamped = "[${logTimeFmt.format(java.util.Date())}] $line"
         runOnUiThread {
             // Mirror the log to both the drawer and the Settings tab.
             for (tv in listOf(binding.statusText, binding.statusTextSettings)) {
+                // Only follow the tail if the user was already at the bottom, so
+                // scrolling up to read history isn't yanked back down by new lines.
+                val follow = logAtBottom(tv)
                 val prev = tv.text
-                tv.text = if (prev.isEmpty()) line else "$prev\n$line"
-                tv.post {
+                tv.text = if (prev.isEmpty()) stamped else "$prev\n$stamped"
+                if (follow) tv.post {
                     val layout = tv.layout ?: return@post
                     val bottom = layout.getLineTop(tv.lineCount) - tv.height
                     tv.scrollTo(0, if (bottom > 0) bottom else 0)
                 }
             }
         }
+    }
+
+    /**
+     * Show a toast, cancelling any previous one first so repeatedly tapping a
+     * button (e.g. Start TX / Play with no HackRF) doesn't stack up a long queue
+     * of identical toasts that linger on screen.
+     */
+    private fun showToast(msg: String) {
+        activeToast?.cancel()
+        activeToast = android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG)
+        activeToast?.show()
     }
 
     private fun copyAssetToFiles(name: String): File {
@@ -1728,11 +1845,60 @@ class MainActivity : AppCompatActivity() {
         return dst
     }
 
+    // ---- Ephemeris (brdc) selection --------------------------------------
+
+    /** The ephemeris file the generator should use: the user's if set, else bundled. */
+    private fun resolveEphemerisFile(): File {
+        val user = File(filesDir, USER_BRDC_FILE)
+        return if (settingsPrefs.getString("ephem_name", null) != null && user.exists()) user
+        else copyAssetToFiles("brdc0010.22n")
+    }
+
+    /** Copy a user-picked brdc file into app storage and remember its name. */
+    private fun importBrdc(uri: Uri) {
+        try {
+            val name = queryDisplayName(uri) ?: "custom brdc"
+            val dst = File(filesDir, USER_BRDC_FILE)
+            contentResolver.openInputStream(uri).use { input ->
+                if (input == null) { appendStatus("could not open the selected file"); return }
+                FileOutputStream(dst).use { out -> input.copyTo(out) }
+            }
+            settingsPrefs.edit().putString("ephem_name", name).apply()
+            updateEphemStatus()
+            appendStatus("ephemeris set to: $name")
+        } catch (e: Exception) {
+            appendStatus("failed to load brdc: ${e.message}")
+        }
+    }
+
+    private fun resetBrdc() {
+        settingsPrefs.edit().remove("ephem_name").apply()
+        File(filesDir, USER_BRDC_FILE).delete()
+        updateEphemStatus()
+        appendStatus("ephemeris reset to bundled brdc0010.22n")
+    }
+
+    private fun updateEphemStatus() {
+        val name = settingsPrefs.getString("ephem_name", null)
+        val hasFile = File(filesDir, USER_BRDC_FILE).exists()
+        binding.ephemStatus.text =
+            if (name != null && hasFile) "Using: $name" else "Using bundled brdc0010.22n"
+        // The ephemeris is read once at TX start, so only allow changing it while idle.
+        binding.ephemChooseButton.isEnabled = !txRunning
+        binding.ephemResetButton.isEnabled = !txRunning && name != null && hasFile
+    }
+
+    private fun queryDisplayName(uri: Uri): String? =
+        contentResolver.query(
+            uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null
+        )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
     external fun stringFromJNI(): String
 
     companion object {
         init { System.loadLibrary("livegpssdrsim") }
 
+        private const val USER_BRDC_FILE = "user_brdc"   // copied user-selected ephemeris
         private const val TICK_MS = 100L
         private const val TICK_S = TICK_MS / 1000.0
         private const val METERS_PER_DEG_LAT = 111_320.0
