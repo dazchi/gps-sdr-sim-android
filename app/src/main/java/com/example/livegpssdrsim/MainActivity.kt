@@ -216,6 +216,10 @@ class MainActivity : AppCompatActivity() {
                 rightMargin = bars.right + edge
                 bottomMargin = bars.bottom + edge
             }
+            binding.playColumn.updateLayoutParams<FrameLayout.LayoutParams> {
+                leftMargin = bars.left + edge
+                bottomMargin = bars.bottom + edge
+            }
             insets
         }
 
@@ -301,6 +305,7 @@ class MainActivity : AppCompatActivity() {
         // the LLH tab (Map uses Play/Pause/Stop; Settings has no TX action).
         binding.panelMap.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
         binding.fabColumn.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
+        binding.playColumn.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
         binding.txButton.visibility = if (mode == Mode.LIVE) View.VISIBLE else View.GONE
         updateMapFabs()
     }
@@ -815,6 +820,30 @@ class MainActivity : AppCompatActivity() {
             scheduleRouteFetch()
         }
         binding.showTrkptSwitch.setOnCheckedChangeListener { _, _ -> redrawMap() }
+        binding.stopTrkptSwitch.setOnCheckedChangeListener { _, _ ->
+            // Recompute the stop set live so toggling this takes effect mid-flight
+            // (the numeric dynamics fields are already read fresh every tick).
+            if (txRunning) stopCheckpoints = computeCheckpoints(activePts())
+        }
+
+        // Stop probability is a 0–1 chance: flag out-of-range input as you type,
+        // then snap it back into range when the field loses focus.
+        binding.dynStopprobInput.doAfterTextChanged { e ->
+            val s = e?.toString()?.trim().orEmpty()
+            val v = s.toDoubleOrNull()
+            binding.dynStopprobLayout.error =
+                if (s.isNotEmpty() && (v == null || v < 0.0 || v > 1.0)) "Enter 0–1" else null
+        }
+        binding.dynStopprobInput.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) return@setOnFocusChangeListener
+            val v = binding.dynStopprobInput.text?.toString()?.trim()?.toDoubleOrNull()
+            val clamped = (v ?: 0.0).coerceIn(0.0, 1.0)
+            if (v == null || clamped != v) {
+                binding.dynStopprobInput.setText(if (clamped == clamped.toLong().toDouble())
+                    clamped.toLong().toString() else clamped.toString())
+            }
+            binding.dynStopprobLayout.error = null
+        }
         binding.mapAltInput.doAfterTextChanged { updateWpList(); updateRouteInfo() }
         binding.repeatGroup.setOnCheckedChangeListener { _, id ->
             repeatMode = when (id) {
@@ -861,6 +890,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnPlay.setOnClickListener { onPlayClicked() }
         binding.btnPause.setOnClickListener { onPauseClicked() }
         binding.btnStop.setOnClickListener { stopEverything() }
+        binding.btnPlayPause.setOnClickListener {
+            if (txRunning && !routePaused) onPauseClicked() else onPlayClicked()
+        }
+        binding.btnStopFab.setOnClickListener { stopEverything() }
 
         binding.btnGpxLoad.setOnClickListener {
             if (txRunning) return@setOnClickListener
@@ -1071,7 +1104,10 @@ class MainActivity : AppCompatActivity() {
             wpMarkers.add(m)
             map.overlays.add(m)
         }
-        cursorMarker?.let { if (!map.overlays.contains(it)) map.overlays.add(it) }
+        // Re-adding the line/markers above pushes them to the top of the draw
+        // order, so lift the simulated-position cursor back to the very top to
+        // keep it from being buried under waypoints or the route line.
+        cursorMarker?.let { map.overlays.remove(it); map.overlays.add(it) }
         map.invalidate()
         updateMapFabs()   // keep the delete/clear FABs in sync with the waypoints
 
@@ -1195,33 +1231,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** When "Auto altitude" is on, fill SRTM elevations along the active route. */
+    /**
+     * When "Auto altitude" is on, get SRTM heights for the *waypoints only* and
+     * interpolate them onto the route's trackpoints (rather than querying SRTM
+     * for every trackpoint). For a straight-line route the waypoints are the
+     * route, so they just carry their own measured heights.
+     */
     private fun maybeEnrichElevation() {
         if (!binding.autoAltSwitch.isChecked) return
         val road = routeGeo.size >= 2
-        val target = if (road) routeGeo else waypoints.toList()
-        if (target.size < 2) return
+        val wpsSnapshot = waypoints.toList()
+        if (wpsSnapshot.size < 2) return
         val capturedRoute = routeGeo
+        val loop = road && repeatMode == RepeatMode.LOOP
         elevJob?.cancel()
         elevJob = scope.launch {
             try {
-                val enriched = ElevationClient.enrich(target)
-                if (road) {
-                    if (routeGeo !== capturedRoute) return@launch   // route changed; result is stale
-                    routeGeo = enriched
-                } else {
-                    // Apply altitudes in place, but ONLY if the waypoints are
-                    // unchanged since we snapshotted them — so a waypoint added
-                    // during the fetch isn't wiped by this stale result.
-                    if (waypoints.size != target.size ||
-                        waypoints.indices.any {
-                            waypoints[it].lat != target[it].lat || waypoints[it].lon != target[it].lon
-                        }
-                    ) return@launch
-                    for (i in enriched.indices) waypoints[i] = enriched[i]
+                // One SRTM request, sampled at the waypoints only.
+                val wpsAlt = ElevationClient.enrich(wpsSnapshot)
+
+                // Store the measured heights back on the waypoints, but ONLY if
+                // they're unchanged since the snapshot (so a waypoint added or
+                // moved during the fetch isn't clobbered by this stale result).
+                val wpsUnchanged = waypoints.size == wpsSnapshot.size &&
+                    waypoints.indices.none {
+                        waypoints[it].lat != wpsSnapshot[it].lat ||
+                            waypoints[it].lon != wpsSnapshot[it].lon
+                    }
+                if (wpsUnchanged) {
+                    for (i in wpsAlt.indices) waypoints[i] = wpsAlt[i]
                 }
+
+                if (road) {
+                    if (routeGeo !== capturedRoute) return@launch   // route changed; stale
+                    // Loop mode closes back to the first waypoint, so add it as a
+                    // trailing control for the closing leg's interpolation.
+                    val controls = if (loop) wpsAlt + wpsAlt.first() else wpsAlt
+                    routeGeo = RouteGeometry.interpolateAltitudes(capturedRoute, controls)
+                } else if (!wpsUnchanged) {
+                    return@launch   // straight-line: nothing valid to apply
+                }
+
                 redrawMap(); updateWpList(); updateMapFabs()
-                val alts = enriched.mapNotNull { it.alt }
+                val alts = (if (road) routeGeo else waypoints).mapNotNull { it.alt }
                 val range = if (alts.isNotEmpty()) " · ${alts.min().toInt()}–${alts.max().toInt()} m" else ""
                 setRouteStatus("Route · ${fmtDist(RouteGeometry.totalDistance(activePts()))}$range")
             } catch (e: Exception) {
@@ -1291,9 +1343,11 @@ class MainActivity : AppCompatActivity() {
         if (total <= 0.0) return
         val speedKmh = binding.mapSpeedSeek.progress
 
-        // Random-stop hold: sit still until the timer expires.
+        // Random-stop hold: sit still until the timer expires. Clamp at zero so
+        // the countdown doesn't overshoot negative (which would keep the
+        // checkpoint-arming guard below from ever firing another stop).
         if (stopRemainingMs > 0.0) {
-            stopRemainingMs -= dt * 1000.0
+            stopRemainingMs = (stopRemainingMs - dt * 1000.0).coerceAtLeast(0.0)
             pushAndShow(pts, total, speedKmh, "Stopped ${(stopRemainingMs / 1000).toInt() + 1}s")
             return
         }
@@ -1326,7 +1380,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Random stop when crossing an intermediate waypoint.
-        if (stopRemainingMs == 0.0 && stopProb > 0.0) {
+        if (stopRemainingMs <= 0.0 && stopProb > 0.0) {
             for (cp in stopCheckpoints) {
                 val crossed = (prev < cp && routeProgress >= cp) || (prev > cp && routeProgress <= cp)
                 if (crossed && Random.nextDouble() < stopProb) {
@@ -1444,6 +1498,14 @@ class MainActivity : AppCompatActivity() {
         binding.btnPlay.isEnabled = hasRoute && (!transmitting || routePaused)
         binding.btnPause.isEnabled = transmitting && !routePaused
         binding.btnStop.isEnabled = transmitting
+
+        // Quick FAB: shows pause while actively playing, play otherwise.
+        val playing = transmitting && !routePaused
+        binding.btnPlayPause.setImageResource(
+            if (playing) R.drawable.ic_pause else R.drawable.ic_play
+        )
+        binding.btnPlayPause.isEnabled = playing || (hasRoute && (!transmitting || routePaused))
+        binding.btnStopFab.isEnabled = transmitting
     }
 
     private fun setMapEditEnabled(enabled: Boolean) {
@@ -1466,6 +1528,11 @@ class MainActivity : AppCompatActivity() {
             waypoints.addAll(pts)
             routeGeo = emptyList()
             selectedWaypoint = -1
+            // A GPX already carries its own track geometry, so drive it straight
+            // through those points rather than re-routing them via GraphHopper.
+            // (Setting the switch fires its listener, which clears routeGeo and
+            // reschedules — so guard the road path off before the fetch below.)
+            binding.roadSwitch.isChecked = false
             updateWpCount(); redrawMap(); scheduleRouteFetch()
             updateMapButtons(); updateMapFabs()
             // Fit the map to the loaded set.

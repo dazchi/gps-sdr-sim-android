@@ -38,6 +38,61 @@ object RouteGeometry {
     }
 
     /**
+     * Fills every point of [route] with an altitude interpolated from [controls]
+     * — typically the user's waypoints, which carry measured (e.g. SRTM) heights.
+     * Only the controls need real elevations; each trackpoint between two controls
+     * gets a linearly-interpolated height based on its arc-length position along
+     * the route. Controls are matched to the nearest route vertex, scanning
+     * forward so their order (and the route's direction) is preserved. Returns
+     * [route] unchanged when there isn't enough to interpolate.
+     */
+    fun interpolateAltitudes(route: List<GeoPt>, controls: List<GeoPt>): List<GeoPt> {
+        if (route.size < 2 || controls.size < 2) return route
+
+        // Cumulative arc length at each route vertex.
+        val cum = DoubleArray(route.size)
+        for (i in 1 until route.size) {
+            cum[i] = cum[i - 1] +
+                haversine(route[i - 1].lat, route[i - 1].lon, route[i].lat, route[i].lon)
+        }
+
+        // Distance-along-route of each control (nearest vertex, searched forward).
+        val ctrlDist = DoubleArray(controls.size)
+        var start = 0
+        for (j in controls.indices) {
+            var best = start
+            var bestD = Double.MAX_VALUE
+            for (k in start until route.size) {
+                val d = haversine(controls[j].lat, controls[j].lon, route[k].lat, route[k].lon)
+                if (d < bestD) { bestD = d; best = k }
+            }
+            ctrlDist[j] = cum[best]
+            start = best
+        }
+        // Pin the first/last controls to the route's ends.
+        ctrlDist[0] = 0.0
+        ctrlDist[controls.size - 1] = cum[route.size - 1]
+
+        return route.mapIndexed { i, p ->
+            val d = cum[i]
+            var seg = 0
+            while (seg < controls.size - 2 && ctrlDist[seg + 1] < d) seg++
+            val d0 = ctrlDist[seg]
+            val d1 = ctrlDist[seg + 1]
+            val a0 = controls[seg].alt
+            val a1 = controls[seg + 1].alt
+            val alt = when {
+                a0 != null && a1 != null -> {
+                    val t = if (d1 > d0) ((d - d0) / (d1 - d0)).coerceIn(0.0, 1.0) else 0.0
+                    a0 + t * (a1 - a0)
+                }
+                else -> a0 ?: a1
+            }
+            p.copy(alt = alt)
+        }
+    }
+
+    /**
      * Point [dist] metres along the polyline. Clamps to the ends. Altitude is
      * interpolated per-segment when both endpoints carry one, else falls back to
      * [fallbackAlt]. Returns null only for an empty list.

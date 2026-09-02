@@ -348,6 +348,41 @@
             android:text="Controls"
             app:elevation="4dp" />
 
+        <!-- Map-mode quick play/pause + stop (bottom-left) -->
+        <LinearLayout
+            android:id="@+id/play_column"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_margin="16dp"
+            android:gravity="start"
+            android:orientation="vertical"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:visibility="gone">
+
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/btn_play_pause"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="-10dp"
+                android:src="@drawable/ic_play"
+                app:backgroundTint="@android:color/holo_green_dark"
+                app:tint="@android:color/white"
+                app:useCompatPadding="true"
+                android:contentDescription="Play or pause the route" />
+
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/btn_stop_fab"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:src="@drawable/ic_stop"
+                app:backgroundTint="@android:color/holo_red_dark"
+                app:tint="@android:color/white"
+                app:useCompatPadding="true"
+                android:contentDescription="Stop the route" />
+        </LinearLayout>
+
         <!-- Map-mode FABs (delete selected waypoint, above center-on-location) -->
         <LinearLayout
             android:id="@+id/fab_column"
