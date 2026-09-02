@@ -20,6 +20,31 @@ object ElevationClient {
 
     class ElevationException(message: String) : Exception(message)
 
+    /** Ground elevation (metres) at a single point from SRTM, or null on error. */
+    suspend fun elevationAt(lat: Double, lon: Double): Double? = withContext(Dispatchers.IO) {
+        val url = "https://api.opentopodata.org/v1/srtm30m?locations=" +
+            URLEncoder.encode("%.6f,%.6f".format(lat, lon), "UTF-8")
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 20_000
+            setRequestProperty("User-Agent", "LiveGpsSdrSim")
+        }
+        try {
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            val results = JSONObject(body).optJSONArray("results") ?: return@withContext null
+            if (results.length() == 0) return@withContext null
+            val elev = results.getJSONObject(0).optDouble("elevation", Double.NaN)
+            if (elev.isNaN()) null else elev
+        } catch (e: Exception) {
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     /** Returns a copy of [pts] with `alt` filled from SRTM. Throws on API error. */
     suspend fun enrich(pts: List<GeoPt>): List<GeoPt> = withContext(Dispatchers.IO) {
         if (pts.size < 2) return@withContext pts

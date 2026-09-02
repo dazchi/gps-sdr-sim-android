@@ -77,7 +77,7 @@ class MainActivity : AppCompatActivity() {
         override fun onServiceDisconnected(name: android.content.ComponentName?) { txService = null }
     }
 
-    private var mode: Mode = Mode.LIVE
+    private var mode: Mode = Mode.MAP
 
     private val settingsPrefs by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
     private var ampEnabled: Boolean = false
@@ -110,6 +110,9 @@ class MainActivity : AppCompatActivity() {
     private val waypoints = mutableListOf<GeoPt>()
     private var routeGeo: List<GeoPt> = emptyList()   // road geometry (empty = straight-line)
     private val wpMarkers = mutableListOf<Marker>()
+    // Just the numbered waypoint markers, indexed by waypoint index (wpMarkers
+    // also holds the trkpt dots, so it isn't 1:1 with `waypoints`).
+    private val waypointMarkers = mutableListOf<Marker>()
     private var routeLine: Polyline? = null
     private var cursorMarker: Marker? = null
     private var routeJob: Job? = null
@@ -127,6 +130,10 @@ class MainActivity : AppCompatActivity() {
 
     private var routePlaying = false
     private var routePaused = false
+    // Route editing is locked only while a route playback is active (playing or
+    // paused). A static TX — long-press "Start TX here", or after Stop clears a
+    // playback — leaves the map editable even though the HackRF is transmitting.
+    private val routeLocked: Boolean get() = routePlaying
     private var routeProgress = 0.0                    // metres travelled along the route
     private var lastRouteTickMs: Long = 0L
     private var routeLoopRunning = false
@@ -290,7 +297,7 @@ class MainActivity : AppCompatActivity() {
                 }
             )
         }
-        selectMode(Mode.LIVE)
+        selectMode(Mode.MAP)
     }
 
     private fun selectMode(newMode: Mode) {
@@ -661,7 +668,7 @@ class MainActivity : AppCompatActivity() {
         // tap-up (no ~300 ms double-tap-confirm wait) so it feels instant.
         val tapOverlay = object : Overlay() {
             override fun onSingleTapUp(e: android.view.MotionEvent, mapView: org.osmdroid.views.MapView): Boolean {
-                if (txRunning) return false   // route is locked while transmitting
+                if (routeLocked) return false   // route is locked while a playback runs
                 val idx = nearestWaypointToPixel(e.x, e.y, mapView)
                 if (idx >= 0) {
                     if (selectedWaypoint == idx) {
@@ -682,19 +689,12 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
             override fun onLongPress(e: android.view.MotionEvent, mapView: org.osmdroid.views.MapView): Boolean {
-                if (txRunning) {
-                    // Transmitting: long-press sets the simulated position (teleport).
-                    val p = mapView.projection.fromPixels(e.x.toInt(), e.y.toInt())
-                    liveLat = p.latitude; liveLon = p.longitude; velE = 0.0; velN = 0.0
-                    NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
-                    updateCursor(GeoPt(liveLat, liveLon, liveHgt))
-                    appendStatus("sim position set: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}")
-                    return true
-                }
-                // Editing: long-press clears any selection.
-                if (selectedWaypoint != -1) {
-                    selectedWaypoint = -1; redrawMap(); updateMapFabs()
-                }
+                // Long-press anywhere opens the "Set sim position" dialog (like
+                // the reference frontend's right-click). While transmitting, Send
+                // teleports the simulated position; when idle, Send starts a
+                // static TX seeded at that spot.
+                val p = mapView.projection.fromPixels(e.x.toInt(), e.y.toInt())
+                promptSetSimPosition(p.latitude, p.longitude)
                 return true
             }
         }
@@ -715,6 +715,57 @@ class MainActivity : AppCompatActivity() {
         redrawMap()
         updateWpCount()
         updateMapButtons()
+    }
+
+    /**
+     * Confirmation dialog for placing the simulated position (long-press on the
+     * map). Shows the tapped coordinates and asynchronously fetches the SRTM
+     * ground elevation there. While transmitting, Send teleports the sim position;
+     * when idle, Send starts a static TX seeded at that point. Cancel does nothing.
+     */
+    private fun promptSetSimPosition(lat: Double, lon: Double) {
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val body = android.widget.TextView(this).apply {
+            setPadding(pad, pad / 2, pad, 0)
+            textSize = 16f
+            text = "${fmt(lat, 6)}, ${fmt(lon, 6)}\nElevation: …"
+        }
+        var targetHgt = liveHgt
+        val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+            .setTitle(if (txRunning) "Set sim position" else "Start TX here")
+            .setView(body)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Send") { _, _ ->
+                if (txRunning) {
+                    liveLat = lat; liveLon = lon; liveHgt = targetHgt
+                    velE = 0.0; velN = 0.0
+                    NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
+                    updateCursor(GeoPt(liveLat, liveLon, liveHgt))
+                    appendStatus("sim position set: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}, ${fmt(liveHgt, 1)} m")
+                } else {
+                    // Idle: Send starts a static TX seeded at this point. The map
+                    // stays editable — this is a static hold, not a locked playback.
+                    beginLiveTx(lat, lon, targetHgt) {
+                        setMapEditEnabled(true)
+                        updateCursor(GeoPt(liveLat, liveLon, liveHgt))
+                        updateMapButtons()
+                        updateMapFabs()
+                        appendStatus("TX started at ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}, ${fmt(liveHgt, 1)} m")
+                    }
+                }
+            }
+            .show()
+
+        scope.launch {
+            val g = ElevationClient.elevationAt(lat, lon)
+            if (!dialog.isShowing) return@launch
+            if (g != null) {
+                targetHgt = g
+                body.text = "${fmt(lat, 6)}, ${fmt(lon, 6)}\nElevation: ${fmt(g, 1)} m"
+            } else {
+                body.text = "${fmt(lat, 6)}, ${fmt(lon, 6)}\nElevation: ${fmt(liveHgt, 1)} m (current)"
+            }
+        }
     }
 
     private fun onMyLocationClicked() {
@@ -807,7 +858,7 @@ class MainActivity : AppCompatActivity() {
         binding.profileGroup.setOnCheckedChangeListener { _, _ -> scheduleRouteFetch() }
 
         binding.btnWpUndo.setOnClickListener {
-            if (txRunning || waypoints.isEmpty()) return@setOnClickListener
+            if (routeLocked || waypoints.isEmpty()) return@setOnClickListener
             waypoints.removeAt(waypoints.size - 1)
             selectedWaypoint = -1
             updateWpCount(); redrawMap(); scheduleRouteFetch(); updateMapFabs()
@@ -823,7 +874,7 @@ class MainActivity : AppCompatActivity() {
         binding.stopTrkptSwitch.setOnCheckedChangeListener { _, _ ->
             // Recompute the stop set live so toggling this takes effect mid-flight
             // (the numeric dynamics fields are already read fresh every tick).
-            if (txRunning) stopCheckpoints = computeCheckpoints(activePts())
+            if (routePlaying) stopCheckpoints = computeCheckpoints(activePts())
         }
 
         // Stop probability is a 0–1 chance: flag out-of-range input as you type,
@@ -889,14 +940,14 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnPlay.setOnClickListener { onPlayClicked() }
         binding.btnPause.setOnClickListener { onPauseClicked() }
-        binding.btnStop.setOnClickListener { stopEverything() }
+        binding.btnStop.setOnClickListener { stopPlayback() }
         binding.btnPlayPause.setOnClickListener {
-            if (txRunning && !routePaused) onPauseClicked() else onPlayClicked()
+            if (routePlaying && !routePaused) onPauseClicked() else onPlayClicked()
         }
-        binding.btnStopFab.setOnClickListener { stopEverything() }
+        binding.btnStopFab.setOnClickListener { stopPlayback() }
 
         binding.btnGpxLoad.setOnClickListener {
-            if (txRunning) return@setOnClickListener
+            if (routeLocked) return@setOnClickListener
             openGpx.launch(arrayOf("application/gpx+xml", "application/xml", "text/xml", "*/*"))
         }
         binding.btnGpxExport.setOnClickListener {
@@ -927,7 +978,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun selectWaypoint(index: Int) {
-        if (txRunning) return           // route is locked while transmitting
+        if (routeLocked) return         // route is locked while a playback runs
         selectedWaypoint = index
         redrawMap()
         updateMapFabs()
@@ -936,7 +987,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun deleteSelectedWaypoint() {
         val i = selectedWaypoint
-        if (txRunning || i !in waypoints.indices) return
+        if (routeLocked || i !in waypoints.indices) return
         waypoints.removeAt(i)
         selectedWaypoint = -1
         updateWpCount(); redrawMap(); scheduleRouteFetch()
@@ -948,7 +999,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun clearWaypoints() {
-        if (txRunning) return
+        if (routeLocked) return
         waypoints.clear(); routeGeo = emptyList(); selectedWaypoint = -1
         updateWpCount(); redrawMap()
         setRouteStatus("Tap the map to add waypoints")
@@ -956,7 +1007,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateMapFabs() {
-        val editable = mode == Mode.MAP && !txRunning
+        val editable = mode == Mode.MAP && !routeLocked
         binding.btnDeleteWp.visibility =
             if (editable && selectedWaypoint in waypoints.indices) View.VISIBLE else View.GONE
         binding.btnDeleteAll.visibility =
@@ -980,7 +1031,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onManualAddWaypoint() {
-        if (txRunning) return
+        if (routeLocked) return
         val lat = binding.wpLatInput.text?.toString()?.trim()?.toDoubleOrNull()
         val lon = binding.wpLngInput.text?.toString()?.trim()?.toDoubleOrNull()
         if (lat == null || abs(lat) > 90.0 || lon == null || abs(lon) > 180.0) {
@@ -1046,6 +1097,7 @@ class MainActivity : AppCompatActivity() {
         val map = binding.map
         wpMarkers.forEach { map.overlays.remove(it) }
         wpMarkers.clear()
+        waypointMarkers.clear()
         routeLine?.let { map.overlays.remove(it) }
         routeLine = null
 
@@ -1087,21 +1139,35 @@ class MainActivity : AppCompatActivity() {
                 icon = makeNumberedMarker(i + 1, i == selectedWaypoint)
                 title = "Waypoint ${i + 1}"
                 infoWindow = null   // no gray info bubble on tap
-                isDraggable = !txRunning
+                isDraggable = !routeLocked
                 // Let the tap fall through to the tap overlay, which does the
                 // hit-test (select this waypoint) vs. add-new decision in one place.
                 setOnMarkerClickListener { _, _ -> false }
                 setOnMarkerDragListener(object : Marker.OnMarkerDragListener {
-                    override fun onMarkerDragStart(mk: Marker) {}
+                    override fun onMarkerDragStart(mk: Marker) {
+                        if (routeLocked || i !in waypoints.indices) return
+                        // Mark the waypoint selected (turns it red) as the drag
+                        // begins. Recolour just the affected markers rather than a
+                        // full redraw, which would destroy the marker mid-gesture.
+                        val prev = selectedWaypoint
+                        if (prev != i && prev in waypointMarkers.indices) {
+                            waypointMarkers[prev].icon = makeNumberedMarker(prev + 1, false)
+                        }
+                        selectedWaypoint = i
+                        mk.icon = makeNumberedMarker(i + 1, true)
+                        updateMapFabs()
+                        map.invalidate()
+                    }
                     override fun onMarkerDrag(mk: Marker) {}
                     override fun onMarkerDragEnd(mk: Marker) {
-                        if (txRunning || i !in waypoints.indices) return
+                        if (routeLocked || i !in waypoints.indices) return
                         waypoints[i] = GeoPt(mk.position.latitude, mk.position.longitude, null)
                         updateWpCount(); redrawMap(); scheduleRouteFetch(); updateRouteInfo()
                     }
                 })
             }
             wpMarkers.add(m)
+            waypointMarkers.add(m)
             map.overlays.add(m)
         }
         // Re-adding the line/markers above pushes them to the top of the draw
@@ -1290,32 +1356,72 @@ class MainActivity : AppCompatActivity() {
         val pts = activePts()
         if (pts.isEmpty()) { setRouteStatus("Add at least one waypoint"); return }
 
-        if (!txRunning) {
-            val seed = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
-            setMapEditEnabled(false)
-            direction = 1; loopsDone = 0; stopRemainingMs = 0.0
-            stopCheckpoints = computeCheckpoints(pts)
-            beginLiveTx(seed.lat, seed.lon, seed.alt ?: mapAlt()) {
+        when {
+            !txRunning -> {
+                // Idle: start the HackRF TX and route playback together.
+                val seed = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
+                direction = 1; loopsDone = 0; stopRemainingMs = 0.0
+                stopCheckpoints = computeCheckpoints(pts)
+                beginLiveTx(seed.lat, seed.lon, seed.alt ?: mapAlt()) {
+                    setMapEditEnabled(false)
+                    routePlaying = true; routePaused = false
+                    redrawMap()         // rebuild markers as non-draggable now locked
+                    startRouteLoop()
+                    updateMapButtons()
+                    updateRouteInfo()
+                    appendStatus("Route playback started (${repeatMode.name.lowercase()}).")
+                }
+            }
+            !routePlaying -> {
+                // Already transmitting (static): begin route playback on the live
+                // TX without restarting the generator; teleport to the route start.
+                val seed = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
+                direction = 1; loopsDone = 0; stopRemainingMs = 0.0
+                stopCheckpoints = computeCheckpoints(pts)
+                liveLat = seed.lat; liveLon = seed.lon; liveHgt = seed.alt ?: mapAlt()
+                velE = 0.0; velN = 0.0
+                NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
+                setMapEditEnabled(false)
                 routePlaying = true; routePaused = false
+                redrawMap()             // rebuild markers as non-draggable now locked
                 startRouteLoop()
                 updateMapButtons()
                 updateRouteInfo()
                 appendStatus("Route playback started (${repeatMode.name.lowercase()}).")
             }
-        } else {
-            // Resume from pause.
-            routePaused = false; routePlaying = true
-            if (!routeLoopRunning) startRouteLoop()
-            updateMapButtons()
+            else -> {
+                // Resume from pause.
+                routePaused = false; routePlaying = true
+                if (!routeLoopRunning) startRouteLoop()
+                updateMapButtons()
+            }
         }
     }
 
     private fun onPauseClicked() {
-        if (!txRunning) return
+        if (!routePlaying) return
         routePaused = true
         setRouteStatus("Paused · ${routeProgressLabel()}")
         updateMapButtons()
         updateRouteInfo()
+    }
+
+    /**
+     * Stop route playback but keep the HackRF transmitting the current position
+     * (now a static hold). Clears the playback state and re-enables route editing;
+     * use the drawer's Stop TX / Disconnect to end transmission entirely.
+     */
+    private fun stopPlayback() {
+        if (!routePlaying) return
+        stopRouteLoop()
+        routePlaying = false; routePaused = false
+        routeProgress = 0.0; direction = 1; loopsDone = 0; stopRemainingMs = 0.0
+        setMapEditEnabled(true)
+        redrawMap()                 // rebuild markers as draggable again
+        updateMapButtons()
+        updateRouteInfo()
+        setRouteStatus("Playback stopped — still transmitting; map editable")
+        appendStatus("Route playback stopped (TX still running).")
     }
 
     private fun startRouteLoop() {
@@ -1493,19 +1599,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateMapButtons() {
         val hasRoute = activePts().isNotEmpty()
-        val transmitting = txRunning
-        // Play: available when there's a route and we're either idle or paused.
-        binding.btnPlay.isEnabled = hasRoute && (!transmitting || routePaused)
-        binding.btnPause.isEnabled = transmitting && !routePaused
-        binding.btnStop.isEnabled = transmitting
+        val active = routePlaying                 // a playback is running (playing or paused)
+        val playing = routePlaying && !routePaused
+        // Play: start (idle / static TX) or resume (paused) — whenever not already playing.
+        binding.btnPlay.isEnabled = hasRoute && !playing
+        binding.btnPause.isEnabled = playing
+        // Stop ends the playback only (TX keeps running), so it's meaningful only
+        // while a playback is active.
+        binding.btnStop.isEnabled = active
 
         // Quick FAB: shows pause while actively playing, play otherwise.
-        val playing = transmitting && !routePaused
         binding.btnPlayPause.setImageResource(
             if (playing) R.drawable.ic_pause else R.drawable.ic_play
         )
-        binding.btnPlayPause.isEnabled = playing || (hasRoute && (!transmitting || routePaused))
-        binding.btnStopFab.isEnabled = transmitting
+        binding.btnPlayPause.isEnabled = hasRoute || playing
+        binding.btnStopFab.isEnabled = active
     }
 
     private fun setMapEditEnabled(enabled: Boolean) {

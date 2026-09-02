@@ -466,19 +466,19 @@
                 app:selectionRequired="true">
 
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/mode_live"
-                    style="?attr/materialButtonOutlinedStyle"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:checked="true"
-                    android:text="📡 LLH TX" />
-
-                <com.google.android.material.button.MaterialButton
                     android:id="@+id/mode_map"
                     style="?attr/materialButtonOutlinedStyle"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:checked="true"
                     android:text="🗺 Map" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/mode_live"
+                    style="?attr/materialButtonOutlinedStyle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="📡 LLH TX" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/mode_settings"
