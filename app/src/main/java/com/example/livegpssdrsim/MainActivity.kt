@@ -107,6 +107,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Feedback poller: reads back the position the generator is actually encoding
+    // (NativeGen.currentPosition) and drives the orange map cursor from it, so the
+    // dot reflects what's being transmitted rather than the last commanded push.
+    private val feedbackHandler = Handler(Looper.getMainLooper())
+    private val feedbackBuf = DoubleArray(3)
+    private var feedbackRunning = false
+    private val feedbackTick = object : Runnable {
+        override fun run() {
+            if (NativeGen.currentPosition(feedbackBuf) == 1)
+                updateCursor(GeoPt(feedbackBuf[0], feedbackBuf[1], feedbackBuf[2]))
+            if (feedbackRunning) feedbackHandler.postDelayed(this, TICK_MS)
+        }
+    }
+
     // ---- Map / route state ------------------------------------------------
     private val waypoints = mutableListOf<GeoPt>()
     private var routeGeo: List<GeoPt> = emptyList()   // road geometry (empty = straight-line)
@@ -573,6 +587,7 @@ class MainActivity : AppCompatActivity() {
         routePaused = false
         stopMotionLoop()
         stopRouteLoop()
+        stopFeedbackLoop()
         txService?.stopTx()
         binding.txButton.text = "Start TX"
         setLiveControlsEnabled(false)
@@ -638,7 +653,9 @@ class MainActivity : AppCompatActivity() {
                 add("gps-sdr-sim")
                 add("-e"); add(ephem.absolutePath)
                 add("-b"); add("8")
-                add("-s"); add("4000000")   // 4 MHz IQ, matching the HackRF TX rate
+                // IQ rate must match the HackRF TX rate — drive both from the one
+                // constant so they can't drift apart.
+                add("-s"); add(HackrfTxController.SAMPLE_RATE_HZ.toString())
                 add("-p"); add("128")       // fixed gain (disable path loss)
                 if (retimeNow) { add("-T"); add("now") }
                 add("-S"); add("-H")
@@ -647,6 +664,7 @@ class MainActivity : AppCompatActivity() {
             svc.startTx(args, liveLat, liveLon, liveHgt).fold(
                 onSuccess = {
                     binding.txButton.text = "Stop TX"
+                    startFeedbackLoop()   // dot tracks the generator's actual output
                     updateConnUi()
                     onRunning()
                 },
@@ -661,6 +679,7 @@ class MainActivity : AppCompatActivity() {
         appendStatus("TX failed: ${t.message}")
         txService?.stopTx()       // stop the stream but stay connected
         stopMotionLoop()
+        stopFeedbackLoop()
         setLiveControlsEnabled(false)
         stopRouteLoop()
         routePlaying = false; routePaused = false
@@ -685,6 +704,17 @@ class MainActivity : AppCompatActivity() {
         motionRunning = false
         motionHandler.removeCallbacks(motionTick)
         velE = 0.0; velN = 0.0
+    }
+
+    private fun startFeedbackLoop() {
+        if (feedbackRunning) return
+        feedbackRunning = true
+        feedbackHandler.postDelayed(feedbackTick, TICK_MS)
+    }
+
+    private fun stopFeedbackLoop() {
+        feedbackRunning = false
+        feedbackHandler.removeCallbacks(feedbackTick)
     }
 
     private fun stepMotion(dt: Double) {
@@ -730,9 +760,8 @@ class MainActivity : AppCompatActivity() {
         binding.liveReadout.text =
             "TX: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}, ${fmt(liveHgt, 1)} m\n" +
                 "v = ${fmt(speed * 3.6, 1)} km/h"
-        // Keep the orange map cursor on the live joystick-driven position (even
-        // when stationary) so it's correct whenever the map is shown.
-        updateCursor(GeoPt(liveLat, liveLon, liveHgt))
+        // The orange map cursor is driven by the feedback poller (the generator's
+        // actual encoded position), not the commanded value pushed here.
     }
 
     /** The joystick that drives the sim position in the current mode. */
@@ -1720,7 +1749,8 @@ class MainActivity : AppCompatActivity() {
         val p = RouteGeometry.interpolateAt(pts, routeProgress, mapAlt()) ?: return
         liveLat = p.lat; liveLon = p.lon; liveHgt = p.alt ?: mapAlt()
         NativeGen.pushPosition(liveLat, liveLon, liveHgt)
-        updateCursor(p)
+        // The cursor is driven by the feedback poller (the generator's actual
+        // encoded position), so it isn't moved from the commanded value here.
         updateRouteInfo()
 
         val pct = (routeProgress / total * 100).toInt()

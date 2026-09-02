@@ -32,6 +32,7 @@ extern "C" {
     void   android_streaming_reset(void);
     int    android_push_position(double lat_deg, double lon_deg, double hgt_m);
     int    android_force_position(double lat_deg, double lon_deg, double hgt_m);
+    int    android_get_current_position(double *out);
     extern __thread jmp_buf g_gpssim_exit_jmp;
     extern __thread int     g_gpssim_exit_armed;
 }
@@ -221,4 +222,17 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_example_livegpssdrsim_NativeGen_pushPositionForce(
         JNIEnv* /*env*/, jobject /*thiz*/, jdouble lat, jdouble lon, jdouble hgt) {
     return android_force_position(lat, lon, hgt);
+}
+
+// Read back the position the generator is currently encoding (what's actually
+// being transmitted, modulo the IQ buffer). Fills out[0..2] = lat,lon,hgt in
+// degrees and returns 1 when valid, else 0. `out` must have length >= 3.
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_livegpssdrsim_NativeGen_currentPosition(
+        JNIEnv* env, jobject /*thiz*/, jdoubleArray out) {
+    if (out == nullptr || env->GetArrayLength(out) < 3) return 0;
+    double buf[3];
+    int valid = android_get_current_position(buf);
+    if (valid) env->SetDoubleArrayRegion(out, 0, 3, buf);
+    return valid;
 }

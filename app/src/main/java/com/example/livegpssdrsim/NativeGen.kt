@@ -32,4 +32,13 @@ object NativeGen {
      * For an explicit user override (typed LLH) that may teleport far. Returns 1.
      */
     external fun pushPositionForce(lat: Double, lon: Double, hgt: Double): Int
+
+    /**
+     * Read back the position the generator is currently encoding into IQ — what
+     * is actually being transmitted (still ~1 s ahead of the antenna by the IQ
+     * ring buffer), as opposed to the last position pushed. Writes lat, lon, hgt
+     * (degrees) into [out] (length >= 3) and returns 1 when a processed position
+     * is available, else 0.
+     */
+    external fun currentPosition(out: DoubleArray): Int
 }

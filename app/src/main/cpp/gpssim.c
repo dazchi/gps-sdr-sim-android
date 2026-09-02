@@ -148,6 +148,8 @@ size_t rb_hwm   = RB_SIZE; // high-water mark; tightened in socket mode
 static volatile sock_t feedback_sock = SOCK_INVALID;
 // Last processed position in degrees (lat, lon, height) — updated from FIFO, sent every tick.
 static double current_llh_deg[3] = {0.0, 0.0, 0.0};
+// 1 once the generator has processed at least one position (current_llh_deg valid).
+static volatile int g_has_current = 0;
 
 pthread_mutex_t rb_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t rb_cond = PTHREAD_COND_INITIALIZER;
@@ -2678,6 +2680,7 @@ int main(int argc, char *argv[])
 				current_llh_deg[0] = llh_s[0] * R2D;
 				current_llh_deg[1] = llh_s[1] * R2D;
 				current_llh_deg[2] = llh_s[2];
+				g_has_current = 1;
 			}
 			pthread_mutex_unlock(&pos_mutex);
 
@@ -2760,6 +2763,7 @@ int main(int argc, char *argv[])
 				current_llh_deg[0] = llh_s[0] * R2D;
 				current_llh_deg[1] = llh_s[1] * R2D;
 				current_llh_deg[2] = llh_s[2];
+				g_has_current = 1;
 			}
 			pthread_mutex_unlock(&pos_mutex);
 
@@ -3038,6 +3042,8 @@ void android_streaming_reset(void) {
     pos_f_head = pos_f_tail = pos_f_count = 0;
     g_push_last_llh[0] = g_push_last_llh[1] = g_push_last_llh[2] = 0.0;
     g_push_has_last = 0;
+    g_has_current = 0;
+    current_llh_deg[0] = current_llh_deg[1] = current_llh_deg[2] = 0.0;
     pthread_cond_broadcast(&pos_cond);
     pthread_mutex_unlock(&pos_mutex);
 
@@ -3098,6 +3104,24 @@ int android_push_position(double lat_deg, double lon_deg, double hgt_m) {
 int android_force_position(double lat_deg, double lon_deg, double hgt_m) {
     g_push_has_last = 0;
     return android_push_position(lat_deg, lon_deg, hgt_m);
+}
+
+// Read back the position the generator is currently encoding into IQ (the LLH
+// popped from the FIFO each 10 Hz tick), in degrees. This is what is actually
+// being transmitted (still ~1 s ahead of the antenna by the IQ ring buffer),
+// as opposed to the last position the app pushed. Writes lat,lon,hgt into
+// out[0..2] and returns 1 when a processed position is available, else 0.
+int android_get_current_position(double *out) {
+    int valid;
+    pthread_mutex_lock(&pos_mutex);
+    valid = g_has_current;
+    if (valid) {
+        out[0] = current_llh_deg[0];
+        out[1] = current_llh_deg[1];
+        out[2] = current_llh_deg[2];
+    }
+    pthread_mutex_unlock(&pos_mutex);
+    return valid;
 }
 
 // Pull exactly `len` bytes into `dst`, blocking until either enough data is
