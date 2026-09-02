@@ -168,9 +168,13 @@ top of those.
   pushed static position, so the receiver infers velocity from the position
   rate rather than from a modelled Doppler. Fine for typical lock/track
   testing; not for high-dynamics or RTK-grade work.
-- **No foreground service.** Swiping the app away or long backgrounding
-  will kill the TX stream. Wrap the transmit path in a `Service` with a
-  persistent notification if you need it to survive.
+- **Movement pauses if the Activity is destroyed.** A foreground service now
+  owns the HackRF connection and the TX stream, so transmission survives
+  backgrounding and swipe-away (a persistent notification with a Stop action
+  reflects this). But the joystick and route-playback loops still run in the
+  Activity, so if the system tears it down mid-run the receiver keeps getting
+  the last position rather than a moving one until you reopen the app. Moving
+  those loops into the service is the natural next step.
 - **`SCHED_FIFO` isn't granted** to unrooted apps. The generator thread
   falls back to normal scheduling; if you see underruns during long
   transmissions, that's the reason.

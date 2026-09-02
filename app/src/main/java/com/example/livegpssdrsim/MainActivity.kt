@@ -10,6 +10,7 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -35,13 +36,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.osmdroid.config.Configuration
-import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
 import org.osmdroid.util.MapTileIndex
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
@@ -59,9 +59,23 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val scope = CoroutineScope(Dispatchers.Main)
-    private var hackrf: HackrfTxController? = null   // non-null once connected
-    private var txRunning = false                    // true while transmitting
+    // The HackRF connection + TX stream live in a foreground service so they
+    // survive backgrounding / swipe-away.
+    private var txService: TxService? = null
     private var connecting = false
+    private val connected: Boolean get() = txService?.connected == true
+    private val txRunning: Boolean get() = txService?.txRunning == true
+
+    private val serviceConn = object : android.content.ServiceConnection {
+        override fun onServiceConnected(name: android.content.ComponentName?, b: android.os.IBinder?) {
+            txService = (b as TxService.LocalBinder).service.also {
+                it.onStateChanged = { runOnUiThread { onServiceState() } }
+                it.onUnplugged = { runOnUiThread { appendStatus("HackRF unplugged — disconnected.") } }
+            }
+            onServiceState()
+        }
+        override fun onServiceDisconnected(name: android.content.ComponentName?) { txService = null }
+    }
 
     private var mode: Mode = Mode.LIVE
 
@@ -151,6 +165,10 @@ class MainActivity : AppCompatActivity() {
         else appendStatus("location permission denied")
     }
 
+    private val notifPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* notification is best-effort; the service runs regardless */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // osmdroid must be configured before any MapView is inflated.
@@ -206,6 +224,19 @@ class MainActivity : AppCompatActivity() {
         appendStatus(stringFromJNI())
         binding.txButton.setOnClickListener { onTxClicked() }
 
+        // Ask for notification permission so the foreground-TX notification shows.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        // Bind the TX service (it's also started as a foreground service on connect).
+        bindService(
+            android.content.Intent(this, TxService::class.java),
+            serviceConn, android.content.Context.BIND_AUTO_CREATE
+        )
+
         setupModeSelector()
         setupDeviceControls()
         setupRfControls()
@@ -232,8 +263,11 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         stopMotionLoop()
         stopRouteLoop()
-        hackrf?.stopTx()
-        hackrf = null
+        // Unbind but DON'T stop TX — the started foreground service keeps
+        // transmitting after the Activity is gone (stop it from the notification).
+        txService?.onStateChanged = null
+        runCatching { unbindService(serviceConn) }
+        txService = null
     }
 
     // ======================================================================
@@ -275,13 +309,26 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupDeviceControls() {
         binding.btnConnect.setOnClickListener {
-            if (hackrf != null) onDisconnect() else onConnect()
+            if (connected) onDisconnect() else onConnect()
+        }
+        updateConnUi()
+    }
+
+    /** Called when the bound service's connection/TX state changes. */
+    private fun onServiceState() {
+        if (!txRunning) {
+            // TX ended (e.g. via the notification's Stop) while we thought it ran.
+            stopMotionLoop(); stopRouteLoop()
+            routePlaying = false; routePaused = false
+            binding.txButton.text = "Start TX"
+            setLiveControlsEnabled(false)
+            setMapEditEnabled(true)
         }
         updateConnUi()
     }
 
     private fun onConnect() {
-        if (hackrf != null || connecting) return
+        if (connected || connecting) return
         connecting = true
         updateConnUi()
         appendStatus("connecting to HackRF over USB...")
@@ -295,7 +342,14 @@ class MainActivity : AppCompatActivity() {
             }
             connecting = false
             result.fold(
-                onSuccess = { hackrf = it; appendStatus("HackRF connected.") },
+                onSuccess = { ctrl ->
+                    // Hand the open device to the foreground service, starting it.
+                    androidx.core.content.ContextCompat.startForegroundService(
+                        this@MainActivity, android.content.Intent(this@MainActivity, TxService::class.java)
+                    )
+                    txService?.adopt(ctrl) ?: ctrl.stopTx()
+                    appendStatus("HackRF connected.")
+                },
                 onFailure = { t -> appendStatus("connect failed: ${t.message}") }
             )
             updateConnUi()
@@ -304,14 +358,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun onDisconnect() {
         if (txRunning) stopEverything()
-        hackrf?.stopTx()
-        hackrf = null
+        txService?.disconnect()
         updateConnUi()
         appendStatus("HackRF disconnected.")
     }
 
     private fun updateConnUi() {
-        val connected = hackrf != null
         // Single toggle button: label + icon reflect the connection state.
         binding.btnConnect.isEnabled = !connecting
         binding.btnConnect.text = when {
@@ -344,7 +396,7 @@ class MainActivity : AppCompatActivity() {
         binding.ampSwitch.setOnCheckedChangeListener { _, checked ->
             ampEnabled = checked
             settingsPrefs.edit().putBoolean("amp", checked).apply()
-            hackrf?.setAmp(checked)
+            txService?.setAmp(checked)
             appendStatus("amp: ${if (checked) "ON (+14 dB)" else "off"}")
         }
 
@@ -354,7 +406,7 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
                 vgaGain = value
                 binding.vgaLabel.text = "TX VGA Gain: $value dB"
-                if (fromUser) hackrf?.setVgaGain(value)
+                if (fromUser) txService?.setVga(value)
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {
@@ -399,8 +451,7 @@ class MainActivity : AppCompatActivity() {
         routePaused = false
         stopMotionLoop()
         stopRouteLoop()
-        hackrf?.stopTx()
-        txRunning = false
+        txService?.stopTx()
         binding.txButton.text = "Start TX"
         setLiveControlsEnabled(false)
         // Reset route playback UI + cursor.
@@ -445,7 +496,7 @@ class MainActivity : AppCompatActivity() {
      * and invokes [onRunning] on success.
      */
     private fun beginLiveTx(seedLat: Double, seedLon: Double, seedHgt: Double, onRunning: () -> Unit) {
-        val ctrl = hackrf ?: run {
+        val svc = txService?.takeIf { it.connected } ?: run {
             appendStatus("connect the HackRF first (Controls → Connect)"); return
         }
         liveLat = seedLat; liveLon = seedLon; liveHgt = seedHgt
@@ -455,27 +506,19 @@ class MainActivity : AppCompatActivity() {
         setTabsEnabled(false)
         appendStatus("starting generator + TX at $seedLat,$seedLon,$seedHgt...")
         scope.launch {
-            val result = runCatching {
-                withContext(Dispatchers.IO) {
-                    val ephem = copyAssetToFiles("brdc0010.22n")
-                    appendStatus("ephemeris: ${ephem.absolutePath}")
-                    val dummyOut = File(filesDir, "unused.bin")
-                    val args = buildList {
-                        add("gps-sdr-sim")
-                        add("-e"); add(ephem.absolutePath)
-                        add("-b"); add("8")
-                        if (retimeNow) { add("-T"); add("now") }
-                        add("-S"); add("-H")
-                        add("-o"); add(dummyOut.absolutePath)
-                    }.toTypedArray()
-                    NativeGen.startStreaming(args)
-                    NativeGen.pushPosition(liveLat, liveLon, liveHgt)
-                }
-                ctrl.startTx()
-            }
-            result.fold(
+            val ephem = withContext(Dispatchers.IO) { copyAssetToFiles("brdc0010.22n") }
+            appendStatus("ephemeris: ${ephem.absolutePath}")
+            val dummyOut = File(filesDir, "unused.bin")
+            val args = buildList {
+                add("gps-sdr-sim")
+                add("-e"); add(ephem.absolutePath)
+                add("-b"); add("8")
+                if (retimeNow) { add("-T"); add("now") }
+                add("-S"); add("-H")
+                add("-o"); add(dummyOut.absolutePath)
+            }.toTypedArray()
+            svc.startTx(args, liveLat, liveLon, liveHgt).fold(
                 onSuccess = {
-                    txRunning = true
                     binding.txButton.text = "Stop TX"
                     updateConnUi()
                     onRunning()
@@ -489,8 +532,7 @@ class MainActivity : AppCompatActivity() {
     private fun onTxStartFailed(t: Throwable) {
         Log.e("MainActivity", "TX startup failed", t)
         appendStatus("TX failed: ${t.message}")
-        hackrf?.stopTx()          // stop the stream but stay connected
-        txRunning = false
+        txService?.stopTx()       // stop the stream but stay connected
         setLiveControlsEnabled(false)
         stopRouteLoop()
         routePlaying = false; routePaused = false
@@ -599,27 +641,59 @@ class MainActivity : AppCompatActivity() {
         // upscaled tiles (which look like "map data not yet available").
         map.minZoomLevel = 3.0
         map.maxZoomLevel = 22.0
-        map.controller.setZoom(12.0)
-        map.controller.setCenter(GeoPoint(35.68, 139.76))
+        // Center + zoom on the last "my location" fix (defaults to Tokyo @ z12).
+        val mp = getSharedPreferences("map_prefs", Context.MODE_PRIVATE)
+        map.controller.setZoom(mp.getFloat("loc_zoom", 12f).toDouble())
+        map.controller.setCenter(
+            GeoPoint(
+                mp.getFloat("loc_lat", 35.68f).toDouble(),
+                mp.getFloat("loc_lon", 139.76f).toDouble()
+            )
+        )
 
-        val receiver = object : MapEventsReceiver {
-            override fun singleTapConfirmedHelper(p: GeoPoint): Boolean {
+        // Single tap: if it lands on an existing waypoint, select it (tap it
+        // again to deselect); otherwise drop a new waypoint. Handled on the raw
+        // tap-up (no ~300 ms double-tap-confirm wait) so it feels instant.
+        val tapOverlay = object : Overlay() {
+            override fun onSingleTapUp(e: android.view.MotionEvent, mapView: org.osmdroid.views.MapView): Boolean {
                 if (txRunning) return false   // route is locked while transmitting
-                addWaypoint(p.latitude, p.longitude, null)
+                val idx = nearestWaypointToPixel(e.x, e.y, mapView)
+                if (idx >= 0) {
+                    if (selectedWaypoint == idx) {
+                        selectedWaypoint = -1; redrawMap(); updateMapFabs()
+                    } else {
+                        selectWaypoint(idx)
+                    }
+                } else {
+                    val p = mapView.projection.fromPixels(e.x.toInt(), e.y.toInt())
+                    addWaypoint(p.latitude, p.longitude, null)
+                }
                 return true
             }
-            override fun longPressHelper(p: GeoPoint): Boolean {
-                // Long-press = set the simulated position directly (teleport),
-                // like the reference's right-click. Only while transmitting.
-                if (!txRunning) return false
-                liveLat = p.latitude; liveLon = p.longitude; velE = 0.0; velN = 0.0
-                NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
-                updateCursor(GeoPt(liveLat, liveLon, liveHgt))
-                appendStatus("sim position set: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}")
+            override fun onDoubleTap(e: android.view.MotionEvent, mapView: org.osmdroid.views.MapView): Boolean {
+                // Consume double-tap so it neither zooms nor disturbs waypoints
+                // (a stray double-tap must never delete a waypoint). Pinch / the
+                // +/- buttons remain for zooming.
+                return true
+            }
+            override fun onLongPress(e: android.view.MotionEvent, mapView: org.osmdroid.views.MapView): Boolean {
+                if (txRunning) {
+                    // Transmitting: long-press sets the simulated position (teleport).
+                    val p = mapView.projection.fromPixels(e.x.toInt(), e.y.toInt())
+                    liveLat = p.latitude; liveLon = p.longitude; velE = 0.0; velN = 0.0
+                    NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
+                    updateCursor(GeoPt(liveLat, liveLon, liveHgt))
+                    appendStatus("sim position set: ${fmt(liveLat, 6)}, ${fmt(liveLon, 6)}")
+                    return true
+                }
+                // Editing: long-press clears any selection.
+                if (selectedWaypoint != -1) {
+                    selectedWaypoint = -1; redrawMap(); updateMapFabs()
+                }
                 return true
             }
         }
-        map.overlays.add(MapEventsOverlay(receiver))
+        map.overlays.add(tapOverlay)
 
         // "My location" overlay; only starts receiving updates once the user taps
         // the button and grants permission. Use a centered blue dot so it sits
@@ -655,6 +729,7 @@ class MainActivity : AppCompatActivity() {
         if (now != null) {
             binding.map.controller.animateTo(now)
             binding.map.controller.setZoom(17.0)
+            saveDefaultLocation(now.latitude, now.longitude)
         } else {
             appendStatus("acquiring GPS fix for current location…")
             // runOnFirstFix fires on a background thread.
@@ -663,9 +738,19 @@ class MainActivity : AppCompatActivity() {
                     val p = ov.myLocation ?: return@runOnUiThread
                     binding.map.controller.animateTo(p)
                     binding.map.controller.setZoom(17.0)
+                    saveDefaultLocation(p.latitude, p.longitude)
                 }
             }
         }
+    }
+
+    /** Remember the phone's location + zoom (from the my-location FAB) as the default. */
+    private fun saveDefaultLocation(lat: Double, lon: Double) {
+        getSharedPreferences("map_prefs", Context.MODE_PRIVATE).edit()
+            .putFloat("loc_lat", lat.toFloat())
+            .putFloat("loc_lon", lon.toFloat())
+            .putFloat("loc_zoom", binding.map.zoomLevelDouble.toFloat())
+            .apply()
     }
 
     /** GraphHopper key lives in the Settings tab; only valid keys are saved. */
@@ -701,7 +786,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupMapControls() {
+        // Restore persisted map toggles (on by default), then wire listeners.
+        val prefs = getSharedPreferences("map_prefs", Context.MODE_PRIVATE)
+        binding.roadSwitch.isChecked = prefs.getBoolean("road", true)
+        binding.autoAltSwitch.isChecked = prefs.getBoolean("auto_alt", true)
+        binding.profileGroup.visibility = if (binding.roadSwitch.isChecked) View.VISIBLE else View.GONE
+
         binding.roadSwitch.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean("road", checked).apply()
             binding.profileGroup.visibility = if (checked) View.VISIBLE else View.GONE
             if (!checked) routeGeo = emptyList()
             scheduleRouteFetch()
@@ -718,7 +810,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnWpClear.setOnClickListener { clearWaypoints() }
         binding.btnWpAdd.setOnClickListener { onManualAddWaypoint() }
 
-        binding.autoAltSwitch.setOnCheckedChangeListener { _, _ -> scheduleRouteFetch() }
+        binding.autoAltSwitch.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean("auto_alt", checked).apply()
+            scheduleRouteFetch()
+        }
         binding.showTrkptSwitch.setOnCheckedChangeListener { _, _ -> redrawMap() }
         binding.mapAltInput.doAfterTextChanged { updateWpList(); updateRouteInfo() }
         binding.repeatGroup.setOnCheckedChangeListener { _, id ->
@@ -782,6 +877,20 @@ class MainActivity : AppCompatActivity() {
         selectedWaypoint = -1            // tapping empty map clears any selection
         updateWpCount(); redrawMap(); scheduleRouteFetch()
         updateMapButtons(); updateMapFabs()
+    }
+
+    /** Index of the waypoint whose marker is nearest the pixel, or -1 if none close. */
+    private fun nearestWaypointToPixel(px: Float, py: Float, mapView: org.osmdroid.views.MapView): Int {
+        val proj = mapView.projection
+        val threshold = 48f * resources.displayMetrics.density
+        val pt = android.graphics.Point()
+        var best = -1; var bestD = Float.MAX_VALUE
+        waypoints.forEachIndexed { i, w ->
+            proj.toPixels(GeoPoint(w.lat, w.lon), pt)
+            val d = hypot((pt.x - px).toDouble(), (pt.y - py).toDouble()).toFloat()
+            if (d < bestD) { bestD = d; best = i }
+        }
+        return if (bestD <= threshold) best else -1
     }
 
     private fun selectWaypoint(index: Int) {
@@ -946,7 +1055,9 @@ class MainActivity : AppCompatActivity() {
                 title = "Waypoint ${i + 1}"
                 infoWindow = null   // no gray info bubble on tap
                 isDraggable = !txRunning
-                setOnMarkerClickListener { _, _ -> selectWaypoint(i); true }
+                // Let the tap fall through to the tap overlay, which does the
+                // hit-test (select this waypoint) vs. add-new decision in one place.
+                setOnMarkerClickListener { _, _ -> false }
                 setOnMarkerDragListener(object : Marker.OnMarkerDragListener {
                     override fun onMarkerDragStart(mk: Marker) {}
                     override fun onMarkerDrag(mk: Marker) {}
@@ -962,6 +1073,7 @@ class MainActivity : AppCompatActivity() {
         }
         cursorMarker?.let { if (!map.overlays.contains(it)) map.overlays.add(it) }
         map.invalidate()
+        updateMapFabs()   // keep the delete/clear FABs in sync with the waypoints
 
         // Refresh the straight-line status when not showing a road route.
         if (routeGeo.size < 2 && waypoints.size >= 2) {
@@ -1089,16 +1201,26 @@ class MainActivity : AppCompatActivity() {
         val road = routeGeo.size >= 2
         val target = if (road) routeGeo else waypoints.toList()
         if (target.size < 2) return
+        val capturedRoute = routeGeo
         elevJob?.cancel()
         elevJob = scope.launch {
             try {
                 val enriched = ElevationClient.enrich(target)
                 if (road) {
+                    if (routeGeo !== capturedRoute) return@launch   // route changed; result is stale
                     routeGeo = enriched
                 } else {
-                    waypoints.clear(); waypoints.addAll(enriched); selectedWaypoint = -1
+                    // Apply altitudes in place, but ONLY if the waypoints are
+                    // unchanged since we snapshotted them — so a waypoint added
+                    // during the fetch isn't wiped by this stale result.
+                    if (waypoints.size != target.size ||
+                        waypoints.indices.any {
+                            waypoints[it].lat != target[it].lat || waypoints[it].lon != target[it].lon
+                        }
+                    ) return@launch
+                    for (i in enriched.indices) waypoints[i] = enriched[i]
                 }
-                redrawMap(); updateWpList()
+                redrawMap(); updateWpList(); updateMapFabs()
                 val alts = enriched.mapNotNull { it.alt }
                 val range = if (alts.isNotEmpty()) " · ${alts.min().toInt()}–${alts.max().toInt()} m" else ""
                 setRouteStatus("Route · ${fmtDist(RouteGeometry.totalDistance(activePts()))}$range")

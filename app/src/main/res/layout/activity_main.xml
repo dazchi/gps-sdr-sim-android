@@ -500,14 +500,14 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
+                    android:checked="true"
                     android:text="Road routing (GraphHopper)" />
 
                 <RadioGroup
                     android:id="@+id/profile_group"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:visibility="gone">
+                    android:orientation="horizontal">
 
                     <RadioButton
                         android:id="@+id/profile_foot"
@@ -537,6 +537,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
+                    android:checked="true"
                     android:text="Auto altitude (SRTM)" />
 
                 <com.google.android.material.switchmaterial.SwitchMaterial
