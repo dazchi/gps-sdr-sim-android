@@ -8,4 +8,5 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
     <color name="stop_tx">#FFF57C00</color>   <!-- mid-orange stop cue -->
+    <color name="ic_launcher_bg">#FF3D444D</color>   <!-- sampled from the icon's dark ground -->
 </resources>
