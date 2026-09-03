@@ -30,9 +30,13 @@ class HackrfTxController(private val appContext: Context) {
     companion object {
         private const val TAG = "HackrfTx"
 
-        // GPS L1 C/A sample rate used by gps-sdr-sim (4 MHz).
-        // Must match the -s flag passed to gpssim.
-        const val SAMPLE_RATE_HZ = 4_000_000
+        // GPS L1 C/A sample rate used by gps-sdr-sim (2.6 MHz) and by the HackRF.
+        // MainActivity reads this constant for the -s flag, so the two stay in sync.
+        // 2.6 MHz is the right choice for L1 C/A on HackRF: it clears the HackRF 2 MHz
+        // floor, maps to the 2.5 MHz baseband filter, fully contains the 2.046 MHz C/A
+        // main lobe with guard band, and keeps IQ-synthesis load (and USB) low. Higher
+        // rates only add side-lobe spectrum the receiver filters out, at more CPU.
+        const val SAMPLE_RATE_HZ = 2_600_000
         const val CENTER_FREQ_HZ = 1_575_420_000L
         const val QUEUE_SIZE     = 16  // hackrf_android internal buffer pool depth
     }

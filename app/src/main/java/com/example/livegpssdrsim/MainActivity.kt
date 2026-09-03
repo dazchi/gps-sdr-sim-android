@@ -656,7 +656,11 @@ class MainActivity : AppCompatActivity() {
                 // IQ rate must match the HackRF TX rate — drive both from the one
                 // constant so they can't drift apart.
                 add("-s"); add(HackrfTxController.SAMPLE_RATE_HZ.toString())
-                add("-p"); add("128")       // fixed gain (disable path loss)
+                // NOTE: no fixed gain (-p). Verified on-device that -p 128 doesn't
+                // clip (wrap ~0.00%) but does ~double the IQ amplitude (peak8 ~135
+                // vs ~69), pushing the signal to full 8-bit scale. That extra ~6 dB
+                // overloads a nearby receiver's front-end, so it drops lock after a
+                // few seconds. Path-loss gain keeps a healthy ~half-scale level.
                 if (retimeNow) { add("-T"); add("now") }
                 add("-S"); add("-H")
                 add("-o"); add(dummyOut.absolutePath)
