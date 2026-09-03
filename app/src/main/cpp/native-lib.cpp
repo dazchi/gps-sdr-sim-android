@@ -94,7 +94,7 @@ JNI_OnLoad(JavaVM* /*vm*/, void* /*reserved*/) {
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_livegpssdrsim_MainActivity_stringFromJNI(
+Java_com_dazchi_livegpssdrsim_MainActivity_stringFromJNI(
         JNIEnv* env, jobject /*thiz*/) {
     pthread_once(&stderr_redir_once, install_stderr_redirect);
     return env->NewStringUTF("gpssim native library loaded");
@@ -104,7 +104,7 @@ Java_com_example_livegpssdrsim_MainActivity_stringFromJNI(
 // Synchronous run — the "generate a .bin file" path
 // ---------------------------------------------------------------------------
 extern "C" JNIEXPORT jint JNICALL
-Java_com_example_livegpssdrsim_NativeGen_gpssimRun(
+Java_com_dazchi_livegpssdrsim_NativeGen_gpssimRun(
         JNIEnv* env, jobject /*thiz*/, jobjectArray jargs) {
 
     const jsize argc = env->GetArrayLength(jargs);
@@ -147,7 +147,7 @@ static void* generator_thread_main(void* p) {
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_example_livegpssdrsim_NativeGen_startStreaming(
+Java_com_dazchi_livegpssdrsim_NativeGen_startStreaming(
         JNIEnv* env, jobject /*thiz*/, jobjectArray jargs) {
 
     const jsize argc = env->GetArrayLength(jargs);
@@ -182,7 +182,7 @@ Java_com_example_livegpssdrsim_NativeGen_startStreaming(
 // Ring-buffer pull, called from the HackRF TX producer thread on the JVM side
 // ---------------------------------------------------------------------------
 extern "C" JNIEXPORT jint JNICALL
-Java_com_example_livegpssdrsim_NativeGen_rbPullBytes(
+Java_com_dazchi_livegpssdrsim_NativeGen_rbPullBytes(
         JNIEnv* env, jobject /*thiz*/, jbyteArray dst, jint len) {
     if (len <= 0) return 0;
 
@@ -201,7 +201,7 @@ Java_com_example_livegpssdrsim_NativeGen_rbPullBytes(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_livegpssdrsim_NativeGen_requestShutdown(
+Java_com_dazchi_livegpssdrsim_NativeGen_requestShutdown(
         JNIEnv* /*env*/, jobject /*thiz*/) {
     LOGI("requestShutdown()");
     android_request_shutdown();
@@ -212,14 +212,14 @@ Java_com_example_livegpssdrsim_NativeGen_requestShutdown(
 // Returns 1 if the position was accepted, 0 if rejected as an implausible jump.
 // ---------------------------------------------------------------------------
 extern "C" JNIEXPORT jint JNICALL
-Java_com_example_livegpssdrsim_NativeGen_pushPosition(
+Java_com_dazchi_livegpssdrsim_NativeGen_pushPosition(
         JNIEnv* /*env*/, jobject /*thiz*/, jdouble lat, jdouble lon, jdouble hgt) {
     return android_push_position(lat, lon, hgt);
 }
 
 // Force/override the position, bypassing the jump check (typed LLH override).
 extern "C" JNIEXPORT jint JNICALL
-Java_com_example_livegpssdrsim_NativeGen_pushPositionForce(
+Java_com_dazchi_livegpssdrsim_NativeGen_pushPositionForce(
         JNIEnv* /*env*/, jobject /*thiz*/, jdouble lat, jdouble lon, jdouble hgt) {
     return android_force_position(lat, lon, hgt);
 }
@@ -228,7 +228,7 @@ Java_com_example_livegpssdrsim_NativeGen_pushPositionForce(
 // being transmitted, modulo the IQ buffer). Fills out[0..2] = lat,lon,hgt in
 // degrees and returns 1 when valid, else 0. `out` must have length >= 3.
 extern "C" JNIEXPORT jint JNICALL
-Java_com_example_livegpssdrsim_NativeGen_currentPosition(
+Java_com_dazchi_livegpssdrsim_NativeGen_currentPosition(
         JNIEnv* env, jobject /*thiz*/, jdoubleArray out) {
     if (out == nullptr || env->GetArrayLength(out) < 3) return 0;
     double buf[3];

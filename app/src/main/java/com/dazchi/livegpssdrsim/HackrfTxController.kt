@@ -1,4 +1,4 @@
-package com.example.livegpssdrsim
+package com.dazchi.livegpssdrsim
 
 import android.content.Context
 import android.util.Log

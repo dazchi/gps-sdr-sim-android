@@ -1,4 +1,4 @@
-package com.example.livegpssdrsim
+package com.dazchi.livegpssdrsim
 
 import android.Manifest
 import android.content.Context
@@ -27,7 +27,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
 import androidx.core.widget.doAfterTextChanged
-import com.example.livegpssdrsim.databinding.ActivityMainBinding
+import com.dazchi.livegpssdrsim.databinding.ActivityMainBinding
 import com.google.android.material.button.MaterialButtonToggleGroup
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

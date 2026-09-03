@@ -1,4 +1,4 @@
-package com.example.livegpssdrsim
+package com.dazchi.livegpssdrsim
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -32,7 +32,7 @@ import kotlinx.coroutines.withContext
 class TxService : Service() {
 
     companion object {
-        const val ACTION_STOP = "com.example.livegpssdrsim.action.STOP_TX"
+        const val ACTION_STOP = "com.dazchi.livegpssdrsim.action.STOP_TX"
         private const val CHANNEL_ID = "tx"
         private const val NOTIF_ID = 42
         private const val HACKRF_VENDOR_ID = 7504 // 0x1D50 (HackRF One / Jawbreaker / RAD1O)

@@ -1,4 +1,4 @@
-package com.example.livegpssdrsim
+package com.dazchi.livegpssdrsim
 
 import android.util.Xml
 import org.xmlpull.v1.XmlPullParser

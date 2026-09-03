@@ -1,4 +1,4 @@
-package com.example.livegpssdrsim
+package com.dazchi.livegpssdrsim
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

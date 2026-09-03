@@ -3,13 +3,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.livegpssdrsim"
+    namespace = "com.dazchi.livegpssdrsim"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.example.livegpssdrsim"
+        applicationId = "com.dazchi.livegpssdrsim"
         minSdk = 28
         targetSdk = 37
         versionCode = 1

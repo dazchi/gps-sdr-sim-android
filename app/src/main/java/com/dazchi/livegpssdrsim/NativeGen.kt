@@ -1,4 +1,4 @@
-package com.example.livegpssdrsim
+package com.dazchi.livegpssdrsim
 
 object NativeGen {
     init { System.loadLibrary("livegpssdrsim") }
