@@ -35,8 +35,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.osmdroid.config.Configuration
-import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
-import org.osmdroid.util.MapTileIndex
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.overlay.Marker
@@ -830,25 +828,17 @@ class MainActivity : AppCompatActivity() {
     @android.annotation.SuppressLint("ClickableViewAccessibility")
     private fun setupMap() {
         val map = binding.map
-        // OSM's own tile server blocks unlisted apps, and Carto watermarks keyless
-        // tiles, so use Esri's World Street Map (keyless, unwatermarked for dev use).
-        // Esri tile paths are z/y/x, so build the URL explicitly.
-        val esri = object : OnlineTileSourceBase(
-            "EsriWorldStreet", 0, 19, 256, "",
-            arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/"),
-            "Tiles © Esri"
-        ) {
-            override fun getTileURLString(pMapTileIndex: Long): String =
-                baseUrl + MapTileIndex.getZoom(pMapTileIndex) +
-                    "/" + MapTileIndex.getY(pMapTileIndex) +
-                    "/" + MapTileIndex.getX(pMapTileIndex)
-        }
-        map.setTileSource(esri)
+        // Standard OpenStreetMap (Mapnik) tiles from tile.openstreetmap.org. This
+        // works keyless as long as we send a distinctive User-Agent (set in onCreate)
+        // and cache tiles locally (osmdroid does, configured in onCreate) — as the
+        // OSMF tile usage policy requires. Fine for light/personal use; an app with a
+        // large user base should switch to its own or a commercial tile source.
+        map.setTileSource(org.osmdroid.tileprovider.tilesource.TileSourceFactory.MAPNIK)
         map.setMultiTouchControls(true)
-        // Esri's tiles top out around z19; cap zoom there so we never show blurry
-        // upscaled tiles (which look like "map data not yet available").
+        // Mapnik tiles are served up to z19; allow a couple of over-zoom levels
+        // (osmdroid upscales the z19 tiles) so waypoints can be placed precisely.
         map.minZoomLevel = 3.0
-        map.maxZoomLevel = 22.0
+        map.maxZoomLevel = 21.0
         // Center + zoom on the last "my location" fix (defaults to Tokyo @ z12).
         val mp = getSharedPreferences("map_prefs", Context.MODE_PRIVATE)
         map.controller.setZoom(mp.getFloat("loc_zoom", 12f).toDouble())
