@@ -797,7 +797,11 @@ class MainActivity : AppCompatActivity() {
         // idle. When it can't drive it renders dimmed and passes touches through to
         // the map (JoystickView.onTouchEvent returns false while disabled).
         binding.mapJoystick.visibility = if (mode == Mode.MAP) View.VISIBLE else View.GONE
-        val drive = mode == Mode.MAP && txRunning && !routePlaying
+        // Drivable while stopped OR paused — anytime a playback isn't actively
+        // advancing. While paused the route loop early-returns (pushes nothing), so
+        // only the motion loop feeds the FIFO; resuming snaps the sim back to the
+        // route (see onPlayClicked).
+        val drive = mode == Mode.MAP && txRunning && !(routePlaying && !routePaused)
         binding.mapJoystick.isEnabled = drive
         if (!drive) binding.mapJoystick.reset()
         if (drive && !motionRunning) startMotionLoop()
@@ -1599,7 +1603,16 @@ class MainActivity : AppCompatActivity() {
                 appendStatus("Route playback started (${repeatMode.name.lowercase()}).")
             }
             else -> {
-                // Resume from pause.
+                // Resume from pause. The joystick may have driven the sim away
+                // during the pause, so snap it straight back to the route position
+                // (force-push bypasses the >1 km jump guard) before the route loop
+                // takes the FIFO back over.
+                stopMotionLoop()
+                RouteGeometry.interpolateAt(pts, routeProgress, mapAlt())?.let { p ->
+                    liveLat = p.lat; liveLon = p.lon; liveHgt = p.alt ?: mapAlt()
+                    velE = 0.0; velN = 0.0
+                    NativeGen.pushPositionForce(liveLat, liveLon, liveHgt)
+                }
                 routePaused = false; routePlaying = true
                 if (!routeLoopRunning) startRouteLoop()
                 updateMapButtons()
@@ -1610,8 +1623,10 @@ class MainActivity : AppCompatActivity() {
     private fun onPauseClicked() {
         if (!routePlaying) return
         routePaused = true
-        setRouteStatus("Paused · ${routeProgressLabel()}")
-        updateMapButtons()
+        velE = 0.0; velN = 0.0      // start joystick driving from rest during the pause
+        binding.mapJoystick.reset()
+        setRouteStatus("Paused · ${routeProgressLabel()} · joystick free")
+        updateMapButtons()          // -> updateMapJoystick enables the stick + starts the motion loop
         updateRouteInfo()
     }
 
