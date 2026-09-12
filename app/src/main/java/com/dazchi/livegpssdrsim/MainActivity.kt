@@ -159,6 +159,12 @@ class MainActivity : AppCompatActivity() {
     private var stopRemainingMs = 0.0                  // random-stop hold timer
     private var stopCheckpoints = listOf<Double>()     // waypoint distances along the route
 
+    // Persisted so waypoints + route survive the Activity being destroyed and
+    // recreated (backgrounding / memory reclaim / the USB-attach or notification
+    // relaunch). Saved on onStop, reloaded in onCreate.
+    private val routePrefs by lazy { getSharedPreferences("route_state", Context.MODE_PRIVATE) }
+    private var restoringState = false                 // guards listeners during restore
+
     private val mapHandler = Handler(Looper.getMainLooper())
     private val routeTick = object : Runnable {
         override fun run() {
@@ -280,6 +286,20 @@ class MainActivity : AppCompatActivity() {
         setupMapControls()
         setupSettingsControls()
         applyDrawerWidth()
+        // Bring back the last route after an Activity recreation (or app restart).
+        restoreRouteState()
+    }
+
+    /**
+     * With launchMode="singleTask" the launcher icon, the notification tap, and the
+     * USB "open app for this device?" prompt (USB_DEVICE_ATTACHED) are all delivered
+     * to this existing instance instead of creating a fresh, blank one — so the
+     * current waypoints / route / playback state survive a HackRF reconnect. Just
+     * adopt the new intent; there's nothing per-intent to act on.
+     */
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
@@ -311,6 +331,86 @@ class MainActivity : AppCompatActivity() {
         binding.map.onPause()
         // Stop location updates while backgrounded to save battery.
         myLocationOverlay?.disableMyLocation()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Persist the route so it survives the Activity being destroyed while
+        // backgrounded (the notification/USB relaunch recreates a fresh Activity).
+        saveRouteState()
+    }
+
+    // ---- Route persistence -------------------------------------------------
+
+    private fun geoListToJson(list: List<GeoPt>): String {
+        val arr = org.json.JSONArray()
+        for (p in list) {
+            val o = org.json.JSONObject().put("lat", p.lat).put("lon", p.lon)
+            if (p.alt != null) o.put("alt", p.alt)
+            arr.put(o)
+        }
+        return arr.toString()
+    }
+
+    private fun jsonToGeoList(s: String?): List<GeoPt> {
+        if (s.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val arr = org.json.JSONArray(s)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                GeoPt(o.getDouble("lat"), o.getDouble("lon"),
+                    if (o.has("alt")) o.getDouble("alt") else null)
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun saveRouteState() {
+        routePrefs.edit()
+            .putString("waypoints", geoListToJson(waypoints))
+            .putString("routeGeo", geoListToJson(routeGeo))
+            .putString("repeat", repeatMode.name)
+            .apply()
+    }
+
+    /**
+     * Rebuild the last waypoints + routed geometry after the Activity is recreated.
+     * Playback always comes back stopped (the map is editable and the joystick can
+     * drive); if the HackRF is still transmitting a static hold, onServiceState
+     * re-attaches the cursor. Guarded so the repeat radio doesn't trigger a re-route.
+     */
+    private fun restoreRouteState() {
+        val wps = jsonToGeoList(routePrefs.getString("waypoints", null))
+        if (wps.isEmpty()) return
+        restoringState = true
+        try {
+            waypoints.clear(); waypoints.addAll(wps)
+            routeGeo = jsonToGeoList(routePrefs.getString("routeGeo", null))
+            repeatMode = runCatching {
+                RepeatMode.valueOf(routePrefs.getString("repeat", "OFF") ?: "OFF")
+            }.getOrDefault(RepeatMode.OFF)
+            binding.repeatGroup.check(when (repeatMode) {
+                RepeatMode.BOUNCE -> R.id.repeat_bounce
+                RepeatMode.LOOP   -> R.id.repeat_loop
+                else              -> R.id.repeat_off
+            })
+            binding.loopCountRow.visibility =
+                if (repeatMode == RepeatMode.OFF) View.GONE else View.VISIBLE
+        } finally {
+            restoringState = false
+        }
+        redrawMap()
+        updateWpCount()
+        updateRouteInfo()
+        updateMapButtons()
+        updateMapFabs()
+        // Fit the map to the restored route (needs ≥2 points; a single point would
+        // over-zoom to a zero-size box).
+        val pts = activePts()
+        if (pts.size >= 2) {
+            val box = BoundingBox.fromGeoPointsSafe(pts.map { GeoPoint(it.lat, it.lon) })
+            binding.map.post { runCatching { binding.map.zoomToBoundingBox(box, false, 64) } }
+        }
+        appendStatus("restored ${waypoints.size} waypoint${if (waypoints.size == 1) "" else "s"} from last session.")
     }
 
     override fun onDestroy() {
@@ -440,6 +540,14 @@ class MainActivity : AppCompatActivity() {
             binding.txButton.text = "Start TX"
             setLiveControlsEnabled(false)
             setMapEditEnabled(true)
+        } else {
+            // The service is still transmitting but this Activity may be a fresh
+            // instance (recreated while backgrounded). Re-attach the cursor poller
+            // so the orange dot tracks the ongoing TX, and let the map joystick
+            // drive the static hold. (Playback itself comes back stopped.)
+            if (!feedbackRunning) startFeedbackLoop()
+            binding.txButton.text = "Stop TX"
+            updateMapButtons()   // -> updateMapJoystick enables the stick for the static hold
         }
         updateConnUi()
     }
@@ -1095,6 +1203,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.mapAltInput.doAfterTextChanged { updateWpList(); updateRouteInfo() }
         binding.repeatGroup.setOnCheckedChangeListener { _, id ->
+            if (restoringState) return@setOnCheckedChangeListener   // restoring: don't re-route
             repeatMode = when (id) {
                 R.id.repeat_bounce -> RepeatMode.BOUNCE
                 R.id.repeat_loop   -> RepeatMode.LOOP
@@ -1209,6 +1318,7 @@ class MainActivity : AppCompatActivity() {
         updateWpCount(); redrawMap()
         setRouteStatus("Tap the map to add waypoints")
         updateMapButtons(); updateMapFabs()
+        saveRouteState()   // persist the clear so it can't be resurrected on relaunch
     }
 
     private fun updateMapFabs() {
@@ -1623,10 +1733,12 @@ class MainActivity : AppCompatActivity() {
     private fun onPauseClicked() {
         if (!routePlaying) return
         routePaused = true
+        stopRouteLoop()             // hand the FIFO to the joystick while paused
         velE = 0.0; velN = 0.0      // start joystick driving from rest during the pause
         binding.mapJoystick.reset()
+        startMotionLoop()           // ensure the on-map joystick can drive the sim
         setRouteStatus("Paused · ${routeProgressLabel()} · joystick free")
-        updateMapButtons()          // -> updateMapJoystick enables the stick + starts the motion loop
+        updateMapButtons()          // -> updateMapJoystick keeps the stick enabled
         updateRouteInfo()
     }
 
